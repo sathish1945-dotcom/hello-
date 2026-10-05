@@ -13,6 +13,9 @@
     "test": "node --import tsx --test tests/*.test.ts"
   },
   "dependencies": {
+    "@capacitor/android": "^8.5.2",
+    "@capacitor/cli": "^8.5.2",
+    "@capacitor/core": "^8.5.2",
     "@google/genai": "^2.4.0",
     "@tailwindcss/vite": "^4.3.3",
     "@types/pg": "^8.23.1",

@@ -9,6 +9,10 @@ import { ProviderSettingsModal } from './components/ProviderSettingsModal.tsx';
 import { AuthModal } from './components/AuthModal.tsx';
 import { IntegrationsModal } from './components/IntegrationsModal.tsx';
 import { ModelsModal } from './components/ModelsModal.tsx';
+import { FriendModeModal } from './components/FriendModeModal.tsx';
+import { TeacherModeModal } from './components/TeacherModeModal.tsx';
+import { SchedulingModal } from './components/SchedulingModal.tsx';
+import { FeatureNoticeModal, type FeatureNoticeConfig } from './components/FeatureNoticeModal.tsx';
 import { logOutGoogle } from './lib/firebase-auth.ts';
 import { formatChatToMarkdown, downloadMarkdownFile } from './lib/export-markdown.ts';
 import { apiRequest, parseApiError } from './lib/api.ts';
@@ -44,6 +48,10 @@ export default function App() {
   const [isModelsOpen, setIsModelsOpen] = useState(false);
   const [isIntegrationsOpen, setIsIntegrationsOpen] = useState(false);
   const [isAuthOpen, setIsAuthOpen] = useState(false);
+  const [isFriendModeOpen, setIsFriendModeOpen] = useState(false);
+  const [isTeacherModeOpen, setIsTeacherModeOpen] = useState(false);
+  const [isSchedulingOpen, setIsSchedulingOpen] = useState(false);
+  const [featureNotice, setFeatureNotice] = useState<FeatureNoticeConfig | null>(null);
   const [bannerAlert, setBannerAlert] = useState<{ message: string; type: 'error' | 'info' | 'success' } | null>(null);
 
   // Streaming & Routing indicator state
@@ -653,6 +661,38 @@ export default function App() {
         onOpenSettings={() => setIsSettingsOpen(true)}
         onOpenModels={() => setIsModelsOpen(true)}
         onOpenIntegrations={() => setIsIntegrationsOpen(true)}
+        onOpenFriendMode={() => setIsFriendModeOpen(true)}
+        onOpenTeacherMode={() => setIsTeacherModeOpen(true)}
+        onOpenRelationshipSupport={() =>
+          setFeatureNotice({
+            title: 'Relationship Support',
+            tagline: 'Empathetic guidance for communication & boundaries',
+            description:
+              'Navigate difficult interpersonal conversations, communication patterns, and thoughtful relationship reflections with a supportive AI facilitator.',
+            highlights: [
+              'Perspective-taking roleplay exercises',
+              'De-escalation & boundary phrasing suggestions',
+              'Private, confidential journaling space',
+            ],
+            status: 'In Development',
+          })
+        }
+        onOpenProjects={() =>
+          setFeatureNotice({
+            title: 'Projects & Knowledge Hub',
+            tagline: 'Multi-document context & dedicated project spaces',
+            description:
+              'Group your research, documents, repositories, and custom prompt directives into organized project folders with dedicated memory.',
+            highlights: [
+              'Document ingestion & vector retrieval',
+              'Custom system instructions per project',
+              'Cross-document synthesis and code analysis',
+            ],
+            status: 'In Development',
+          })
+        }
+        onOpenScheduling={() => setIsSchedulingOpen(true)}
+        onOpenPlugins={() => setIsIntegrationsOpen(true)}
         onOpenAuth={() => setIsAuthOpen(true)}
         onLogout={handleLogout}
         onToggleDarkMode={() => setDarkMode(!darkMode)}
@@ -705,6 +745,10 @@ export default function App() {
               onNewChat={(prompt = '') => { handleNewChat(); setInput(prompt); requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>('textarea')?.focus()); }}
               onOpenSetup={() => setIsIntegrationsOpen(true)}
               onOpenHistory={() => setIsSidebarOpen(true)}
+              onOpenFriendMode={() => setIsFriendModeOpen(true)}
+              onOpenTeacherMode={() => setIsTeacherModeOpen(true)}
+              onOpenScheduling={() => setIsSchedulingOpen(true)}
+              onOpenFeatureNotice={(feat) => setFeatureNotice(feat)}
             />
           ) : (
             <div className="max-w-3xl mx-auto px-2 sm:px-4 py-4 space-y-1">
@@ -775,6 +819,46 @@ export default function App() {
           fetchProviderStatus();
           fetchChats();
         }}
+      />
+
+      {/* Friend Mode Modal */}
+      <FriendModeModal
+        isOpen={isFriendModeOpen}
+        onClose={() => setIsFriendModeOpen(false)}
+        onStartChat={(prompt) => {
+          handleNewChat();
+          setInput(prompt);
+          requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>('textarea')?.focus());
+        }}
+      />
+
+      {/* Teacher Mode Modal */}
+      <TeacherModeModal
+        isOpen={isTeacherModeOpen}
+        onClose={() => setIsTeacherModeOpen(false)}
+        onStartChat={(prompt) => {
+          handleNewChat();
+          setInput(prompt);
+          requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>('textarea')?.focus());
+        }}
+      />
+
+      {/* Scheduling Modal */}
+      <SchedulingModal
+        isOpen={isSchedulingOpen}
+        onClose={() => setIsSchedulingOpen(false)}
+        onStartChat={(prompt) => {
+          handleNewChat();
+          setInput(prompt);
+          requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>('textarea')?.focus());
+        }}
+      />
+
+      {/* Feature Notice / Roadmap Modal */}
+      <FeatureNoticeModal
+        isOpen={Boolean(featureNotice)}
+        onClose={() => setFeatureNotice(null)}
+        feature={featureNotice}
       />
 
 

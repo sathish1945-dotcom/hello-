@@ -21,13 +21,20 @@ import {
   Zap,
 } from "lucide-react";
 import type { Chat } from "../types/index.ts";
+import type { FeatureNoticeConfig } from "./FeatureNoticeModal.tsx";
+
 interface HomePageProps {
   conversations: Chat[];
   onSelectConversation: (id: string) => void;
   onNewChat: (prompt?: string) => void;
   onOpenSetup: () => void;
   onOpenHistory: () => void;
+  onOpenFriendMode?: () => void;
+  onOpenTeacherMode?: () => void;
+  onOpenScheduling?: () => void;
+  onOpenFeatureNotice?: (feature: FeatureNoticeConfig) => void;
 }
+
 export function HelloOrb({ small = false }: { small?: boolean }) {
   return (
     <span
@@ -42,12 +49,17 @@ export function HelloOrb({ small = false }: { small?: boolean }) {
     </span>
   );
 }
+
 export function HomePage({
   conversations,
   onSelectConversation,
   onNewChat,
   onOpenSetup,
   onOpenHistory,
+  onOpenFriendMode,
+  onOpenTeacherMode,
+  onOpenScheduling,
+  onOpenFeatureNotice,
 }: HomePageProps) {
   const recent = [...conversations]
     .sort(
@@ -56,6 +68,13 @@ export function HomePage({
         Date.parse(a.updated_at || a.created_at),
     )
     .slice(0, 3);
+
+  const openNotice = (feature: FeatureNoticeConfig) => {
+    if (onOpenFeatureNotice) {
+      onOpenFeatureNotice(feature);
+    }
+  };
+
   const features = [
     {
       label: "New Chat",
@@ -63,30 +82,105 @@ export function HomePage({
       color: "blue",
       action: () => onNewChat(),
     },
-    { label: "Group Chat", Icon: Users, color: "purple" },
-    { label: "Voice Chat", Icon: Mic, color: "pink" },
-    { label: "Calls", Icon: Phone, color: "green" },
+    {
+      label: "Group Chat",
+      Icon: Users,
+      color: "purple",
+      action: () =>
+        openNotice({
+          title: "Group Chat",
+          tagline: "Collaborative rooms with people + AI",
+          description:
+            "Invite friends, classmates, or teammates into shared conversation spaces where hello👋 assists with research, action items, and group consensus.",
+          highlights: [
+            "Shared link invitations for teammates",
+            "Multi-agent collaborative answers",
+            "Live meeting notes and action item drafting",
+          ],
+          status: "In Development",
+        }),
+    },
+    {
+      label: "Voice Chat",
+      Icon: Mic,
+      color: "pink",
+      action: () =>
+        openNotice({
+          title: "Voice Chat",
+          tagline: "Fluid, low-latency spoken conversations",
+          description:
+            "Speak naturally with hello👋 using real-time bidirectional streaming, natural interruptibility, and expressive response tones.",
+          highlights: [
+            "Ultra-low latency audio processing",
+            "Interruption-aware fluid speech",
+            "Hands-free conversational mode",
+          ],
+          status: "In Development",
+        }),
+    },
+    {
+      label: "Calls",
+      Icon: Phone,
+      color: "green",
+      action: () =>
+        openNotice({
+          title: "AI Voice Calls",
+          tagline: "Scheduled audio briefings & interview practice",
+          description:
+            "Receive scheduled morning phone briefings, mindful daily reflections, or simulated technical & behavioral interview practice.",
+          highlights: [
+            "Scheduled morning wake-up check-ins",
+            "Realistic mock job interview simulations",
+            "Language speaking practice drills",
+          ],
+          status: "Planned",
+        }),
+    },
     {
       label: "Friend Mode",
       Icon: Heart,
       color: "orange",
-      action: () =>
-        onNewChat(
-          "Let’s have a friendly conversation. Ask me how my day is going.",
-        ),
+      action: onOpenFriendMode || (() =>
+        onNewChat("Let's have a friendly conversation. Ask me how my day is going.")),
     },
     {
       label: "Teacher Mode",
       Icon: GraduationCap,
       color: "blue",
-      action: () =>
-        onNewChat(
-          "Help me learn step by step. First ask what subject I want to study.",
-        ),
+      action: onOpenTeacherMode || (() =>
+        onNewChat("Help me learn step by step. First ask what subject I want to study.")),
     },
-    { label: "Projects", Icon: Folder, color: "purple" },
+    {
+      label: "Projects",
+      Icon: Folder,
+      color: "purple",
+      action: () =>
+        openNotice({
+          title: "Projects & Knowledge Hub",
+          tagline: "Multi-document context & dedicated project spaces",
+          description:
+            "Group your research, documents, repositories, and custom prompt directives into organized project folders with dedicated memory.",
+          highlights: [
+            "Document ingestion & vector retrieval",
+            "Custom system instructions per project",
+            "Cross-document synthesis and code analysis",
+          ],
+          status: "In Development",
+        }),
+    },
     { label: "Integrations", Icon: Link, color: "cyan", action: onOpenSetup },
-    { label: "Scheduling", Icon: CalendarDays, color: "orange" },
+    {
+      label: "Scheduling",
+      Icon: CalendarDays,
+      color: "orange",
+      action: onOpenScheduling || (() => openNotice({
+        title: "Daily Scheduling",
+        tagline: "Automated check-ins and reflection routines",
+        description: "Configure daily morning intentions, midday focus checks, and evening reflections.",
+        highlights: ["Automated browser check-in notifications", "Routine tracking"],
+        status: "In Development",
+      })),
+    },
     { label: "Plugins", Icon: Puzzle, color: "purple", action: onOpenSetup },
     { label: "History", Icon: History, color: "blue", action: onOpenHistory },
   ];
@@ -223,17 +317,28 @@ export function HomePage({
           <span className="section-note">Choose a conversation style</span>
         </div>
         <div className="hello-roles">
-          {roles.map(({ name, detail, Icon, color, prompt }) => (
-            <button
-              key={name}
-              className={`hello-role tone-${color}`}
-              onClick={() => onNewChat(prompt)}
-            >
-              <Icon aria-hidden="true" />
-              <strong>{name}</strong>
-              <span>{detail}</span>
-            </button>
-          ))}
+          {roles.map(({ name, detail, Icon, color, prompt }) => {
+            const handleClick = () => {
+              if (name === "Friend" && onOpenFriendMode) {
+                onOpenFriendMode();
+              } else if (name === "Teacher" && onOpenTeacherMode) {
+                onOpenTeacherMode();
+              } else {
+                onNewChat(prompt);
+              }
+            };
+            return (
+              <button
+                key={name}
+                className={`hello-role tone-${color}`}
+                onClick={handleClick}
+              >
+                <Icon aria-hidden="true" />
+                <strong>{name}</strong>
+                <span>{detail}</span>
+              </button>
+            );
+          })}
         </div>
       </section>
       <section aria-labelledby="tools-title">
@@ -273,13 +378,27 @@ export function HomePage({
       <section aria-labelledby="schedule-title">
         <div className="hello-section-heading">
           <h2 id="schedule-title">Today’s Schedule</h2>
-          <span className="section-note">Coming soon</span>
+          {onOpenScheduling && (
+            <button onClick={onOpenScheduling}>
+              Configure <ChevronRight size={16} />
+            </button>
+          )}
         </div>
-        <div className="hello-schedule">
+        <div
+          className="hello-schedule cursor-pointer hover:border-amber-500/40 transition-colors"
+          onClick={onOpenScheduling}
+          role="button"
+          tabIndex={0}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              onOpenScheduling?.();
+            }
+          }}
+        >
           <CalendarDays aria-hidden="true" />
           <div>
             <strong>A little space for your day</strong>
-            <p>Scheduled check-ins and reminders are on the way.</p>
+            <p>Scheduled morning, midday, and evening check-ins. Click to configure.</p>
           </div>
         </div>
       </section>
