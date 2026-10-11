@@ -322,6 +322,19 @@ public class FriendModePlugin extends Plugin {
     }
 
     @PluginMethod
+    public void setShowLiveTranscript(PluginCall call) {
+        boolean enabled = call.getBoolean("enabled", true);
+        FriendModeService svc = FriendModeService.getInstance();
+        if (svc != null) {
+            svc.setShowLiveTranscriptEnabled(enabled);
+        }
+        JSObject ret = new JSObject();
+        ret.put("success", true);
+        ret.put("showLiveTranscript", enabled);
+        call.resolve(ret);
+    }
+
+    @PluginMethod
     public void checkPermissions(PluginCall call) {
         JSObject ret = new JSObject();
         boolean micGranted = getPermissionState("microphone").equals(com.getcapacitor.PermissionState.GRANTED);

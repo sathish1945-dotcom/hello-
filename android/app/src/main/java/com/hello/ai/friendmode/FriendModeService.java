@@ -74,6 +74,7 @@ public class FriendModeService extends Service {
     private String language = "en-IN";
     private String commandRecognitionLanguage = "en-IN";
     private boolean floatingEmojiEnabled = true;
+    private boolean showLiveTranscript = true;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private boolean isListeningSessionActive = false;
     private int wakeSessionId = 0;
@@ -217,7 +218,19 @@ public class FriendModeService extends Service {
                 Log.d(TAG, "Overlay Stop requested");
                 stopAnswerPlaybackAndCancel();
             }
+
+            @Override
+            public void onResumeRequested() {
+                Log.d(TAG, "Overlay Resume requested");
+                resumeFriendMode();
+            }
         });
+
+        showLiveTranscript = getSharedPreferences("hello_friend_prefs", MODE_PRIVATE)
+                .getBoolean("show_live_transcript", true);
+        if (floatingOverlay != null) {
+            floatingOverlay.setShowLiveTranscript(showLiveTranscript);
+        }
 
         wakeWordEngine.setListener(new WakeWordEngine.WakeWordListener() {
             @Override
@@ -465,6 +478,9 @@ public class FriendModeService extends Service {
 
         setState(FriendModeState.ACTIVE_LISTENING);
         updateNotification("Friend Mode listening...", "Speak your message now");
+        if (floatingOverlay != null) {
+            floatingOverlay.updateLiveTranscript("", "", false);
+        }
 
         launchSTTCaptureForTurn(turnId);
     }
@@ -499,6 +515,10 @@ public class FriendModeService extends Service {
 
                 if (serviceCallback != null) {
                     serviceCallback.onSpeechRecognized(text, isFinal);
+                }
+
+                if (floatingOverlay != null) {
+                    floatingOverlay.updateLiveTranscript(cumulativeTurnText.toString(), text, isFinal);
                 }
 
                 if (text != null && !text.trim().isEmpty()) {
@@ -849,6 +869,9 @@ public class FriendModeService extends Service {
     public synchronized void stopAnswerPlaybackAndCancel() {
         Log.d(TAG, "Stop triggered: stopping audio playback and cancelling generation");
         cancelPendingAcknowledgement();
+        if (floatingOverlay != null) {
+            floatingOverlay.clearTranscript();
+        }
         if (ttsEngine != null) {
             ttsEngine.stop();
         }
@@ -877,7 +900,10 @@ public class FriendModeService extends Service {
         if (wakeWordEngine != null) wakeWordEngine.stopListening();
         if (sttEngine != null) sttEngine.cancel();
         if (ttsEngine != null) ttsEngine.stop();
-        if (floatingOverlay != null) floatingOverlay.hide();
+        if (floatingOverlay != null) {
+            floatingOverlay.clearTranscript();
+            floatingOverlay.hide();
+        }
 
         stopForeground(true);
         NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
@@ -895,6 +921,9 @@ public class FriendModeService extends Service {
         if (wakeWordEngine != null) wakeWordEngine.stopListening();
         if (sttEngine != null) sttEngine.cancel();
         if (ttsEngine != null) ttsEngine.stop();
+        if (floatingOverlay != null) {
+            floatingOverlay.clearTranscript();
+        }
         setState(FriendModeState.IDLE);
         updateNotification("Friend Mode paused", "Tap Resume in notification or app to continue");
     }
@@ -941,6 +970,19 @@ public class FriendModeService extends Service {
                 floatingOverlay.hide();
             }
         }
+    }
+
+    public void setShowLiveTranscriptEnabled(boolean enabled) {
+        this.showLiveTranscript = enabled;
+        getSharedPreferences("hello_friend_prefs", MODE_PRIVATE)
+                .edit().putBoolean("show_live_transcript", enabled).apply();
+        if (floatingOverlay != null) {
+            floatingOverlay.setShowLiveTranscript(enabled);
+        }
+    }
+
+    public boolean isShowLiveTranscriptEnabled() {
+        return showLiveTranscript;
     }
 
     public void setServiceCallback(ServiceCallback callback) {

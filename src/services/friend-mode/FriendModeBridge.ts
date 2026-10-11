@@ -19,6 +19,7 @@ interface NativeFriendModePlugin {
   speakResponse(options: { text: string }): Promise<{ success: boolean }>;
   setLanguage(options: { language: string }): Promise<{ success: boolean; language: string }>;
   setFloatingEmoji(options: { enabled: boolean }): Promise<{ success: boolean; floatingEmoji: boolean }>;
+  setShowLiveTranscript(options: { enabled: boolean }): Promise<{ success: boolean; showLiveTranscript: boolean }>;
   checkPermissions(): Promise<{ microphone: string; notifications: string; overlay: string }>;
   requestPermissions(): Promise<{ microphone: string; notifications: string; overlay: string }>;
   requestOverlayPermission(): Promise<{ granted: boolean }>;
@@ -33,6 +34,7 @@ export class FriendModeBridge {
   private state: FriendModeState = 'DISABLED';
   private language: FriendLanguage = 'en-IN';
   private floatingEmoji: boolean = true;
+  private showLiveTranscript: boolean = true;
   private listeners: Set<(state: FriendModeState) => void> = new Set();
   private transcriptListeners: Set<(text: string, isFinal: boolean) => void> = new Set();
   private countdownListeners: Set<(secondsRemaining: number) => void> = new Set();
@@ -69,6 +71,9 @@ export class FriendModeBridge {
 
       if (lang) this.language = lang;
       if (emoji !== null) this.floatingEmoji = emoji === 'true';
+
+      const liveTranscript = localStorage.getItem('hello_friend_mode_live_transcript');
+      if (liveTranscript !== null) this.showLiveTranscript = liveTranscript === 'true';
 
       if (saved === 'true') {
         // Auto-reconnect status
@@ -343,6 +348,18 @@ export class FriendModeBridge {
     localStorage.setItem('hello_friend_mode_emoji', String(enabled));
     if (this.isNative()) {
       await NativeFriendMode.setFloatingEmoji({ enabled }).catch(() => {});
+    }
+  }
+
+  public getShowLiveTranscript(): boolean {
+    return this.showLiveTranscript;
+  }
+
+  public async setShowLiveTranscript(enabled: boolean): Promise<void> {
+    this.showLiveTranscript = enabled;
+    localStorage.setItem('hello_friend_mode_live_transcript', String(enabled));
+    if (this.isNative()) {
+      await NativeFriendMode.setShowLiveTranscript({ enabled }).catch(() => {});
     }
   }
 

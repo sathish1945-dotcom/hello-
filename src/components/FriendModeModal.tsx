@@ -43,6 +43,7 @@ export const FriendModeModal: React.FC<FriendModeModalProps> = ({
     overlay: 'prompt',
   });
   const [liveTranscript, setLiveTranscript] = useState<string>('');
+  const [showLiveTranscript, setShowLiveTranscript] = useState<boolean>(() => friendModeBridge.getShowLiveTranscript());
   const [isProcessing, setIsProcessing] = useState(false);
   const [testSpeechPlaying, setTestSpeechPlaying] = useState(false);
   const isNative = friendModeBridge.isNative();
@@ -104,6 +105,11 @@ export const FriendModeModal: React.FC<FriendModeModalProps> = ({
       await friendModeBridge.requestOverlayPermission();
     }
     await friendModeBridge.setFloatingEmoji(enabled);
+  };
+
+  const handleShowLiveTranscriptToggle = async (enabled: boolean) => {
+    setShowLiveTranscript(enabled);
+    await friendModeBridge.setShowLiveTranscript(enabled);
   };
 
   const handleRequestMic = async () => {
@@ -444,25 +450,57 @@ export const FriendModeModal: React.FC<FriendModeModalProps> = ({
             </div>
           </div>
 
-          {/* Floating Emoji Toggle */}
+          {/* Floating Mascot Overlay Card */}
           <div className="p-3.5 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50/50 dark:bg-zinc-950/40 flex items-center justify-between gap-3">
-            <div className="space-y-0.5">
-              <div className="flex items-center gap-2">
-                <span className="font-semibold text-zinc-900 dark:text-zinc-100">
-                  Floating Emoji Overlay (👋)
-                </span>
-                <span className="text-[10px] font-mono text-zinc-400">SYSTEM_ALERT_WINDOW</span>
+            <div className="flex items-center gap-3">
+              <img
+                src="/assets/friend-mascot.png"
+                alt=""
+                aria-hidden="true"
+                className="w-10 h-10 object-contain rounded-full border border-cyan-500/30 p-0.5 bg-zinc-900/60 shrink-0"
+              />
+              <div className="space-y-0.5">
+                <div className="flex items-center gap-2">
+                  <span className="font-semibold text-zinc-900 dark:text-zinc-100">
+                    Floating Mascot Overlay
+                  </span>
+                  <span className="text-[10px] font-mono text-zinc-400">64dp Overlay</span>
+                </div>
+                <p className="text-[11px] text-zinc-500">
+                  Draggable cyan/pink mascot overlay over other apps. Tap to talk, long-press to close.
+                </p>
               </div>
-              <p className="text-[11px] text-zinc-500">
-                Draggable overlay remains on screen over other apps when Hello is minimized. Tap to talk, long-press to close.
-              </p>
             </div>
             <input
               type="checkbox"
               id="floatingEmojiCheck"
               checked={floatingEmoji}
               onChange={(e) => handleFloatingEmojiToggle(e.target.checked)}
-              className="w-4 h-4 rounded text-orange-500 focus:ring-orange-500 shrink-0"
+              className="w-4 h-4 rounded text-cyan-500 focus:ring-cyan-500 shrink-0"
+            />
+          </div>
+
+          {/* Show Live Speech Text Setting */}
+          <div className="p-3.5 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50/50 dark:bg-zinc-950/40 flex items-center justify-between gap-3">
+            <div className="space-y-0.5">
+              <div className="flex items-center gap-2">
+                <span className="font-semibold text-zinc-900 dark:text-zinc-100">
+                  Show live speech text
+                </span>
+                <span className="text-[10px] px-1.5 py-0.5 rounded bg-cyan-500/10 text-cyan-600 dark:text-cyan-400 font-medium">
+                  Privacy Protected
+                </span>
+              </div>
+              <p className="text-[11px] text-zinc-500">
+                Display a readable transcript bubble beside the floating mascot while speaking. Cleared automatically after each turn.
+              </p>
+            </div>
+            <input
+              type="checkbox"
+              id="showLiveTranscriptCheck"
+              checked={showLiveTranscript}
+              onChange={(e) => handleShowLiveTranscriptToggle(e.target.checked)}
+              className="w-4 h-4 rounded text-cyan-500 focus:ring-cyan-500 shrink-0"
             />
           </div>
 
