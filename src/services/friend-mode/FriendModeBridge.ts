@@ -11,7 +11,11 @@ interface NativeFriendModePlugin {
   }>;
   enableFriendMode(options: { language: string; floatingEmoji: boolean }): Promise<{ success: boolean; state: FriendModeState }>;
   disableFriendMode(): Promise<{ success: boolean; state: FriendModeState }>;
+  pauseFriendMode(): Promise<{ success: boolean; state: FriendModeState }>;
+  resumeFriendMode(): Promise<{ success: boolean; state: FriendModeState }>;
   triggerWake(): Promise<{ success: boolean }>;
+  answerNow(): Promise<{ success: boolean }>;
+  stopPlayback(): Promise<{ success: boolean }>;
   speakResponse(options: { text: string }): Promise<{ success: boolean }>;
   setLanguage(options: { language: string }): Promise<{ success: boolean; language: string }>;
   setFloatingEmoji(options: { enabled: boolean }): Promise<{ success: boolean; floatingEmoji: boolean }>;
@@ -27,14 +31,19 @@ const NativeFriendMode = registerPlugin<NativeFriendModePlugin>('FriendMode');
 export class FriendModeBridge {
   private static instance: FriendModeBridge;
   private state: FriendModeState = 'DISABLED';
-  private language: FriendLanguage = 'ta-IN';
+  private language: FriendLanguage = 'en-IN';
   private floatingEmoji: boolean = true;
   private listeners: Set<(state: FriendModeState) => void> = new Set();
   private transcriptListeners: Set<(text: string, isFinal: boolean) => void> = new Set();
+  private countdownListeners: Set<(secondsRemaining: number) => void> = new Set();
 
   // Web Speech fallback variables
   private webRecognition: any = null;
   private isWebListening: boolean = false;
+  private webTurnText: string = '';
+  private webTurnTimer: any = null;
+  private webLastSpeechTime: number = 0;
+  private webCountdownSeconds: number = 10;
 
   private constructor() {
     this.initNativeListeners();
@@ -75,6 +84,9 @@ export class FriendModeBridge {
 
     try {
       await NativeFriendMode.addListener('stateChange', (data: { state: FriendModeState }) => {
+        if (data.state === 'DISABLED' || data.state === 'IDLE' || data.state === 'ERROR') {
+          friendAgent.cancelPending();
+        }
         this.setState(data.state);
       });
 
@@ -87,15 +99,34 @@ export class FriendModeBridge {
         this.notifyTranscript(data.text, data.isFinal);
       });
 
+      await NativeFriendMode.addListener('turnCountdownTick', (data: { secondsRemaining: number }) => {
+        this.notifyCountdown(data.secondsRemaining);
+      });
+
+      await NativeFriendMode.addListener('speechInterrupted', () => {
+        console.log('[FriendModeBridge] Speech interrupted event from native');
+        friendAgent.cancelPending();
+      });
+
       await NativeFriendMode.addListener('speechCompleted', async (data: { text: string }) => {
+        console.log('[FriendModeBridge] speechCompleted event:', data.text);
         this.notifyTranscript(data.text, true);
         this.setState('THINKING');
 
-        // Pass to FriendAgent to query Hello AI model router
-        const reply = await friendAgent.processMessage(data.text);
+        // Pass to FriendAgent to query Hello AI model router with language context
+        const reply = await friendAgent.processMessage(data.text, this.language);
+        console.log('[FriendModeBridge] FriendAgent reply:', reply);
+
+        // If Friend Mode was paused, closed, or disabled while waiting, suppress late playback
+        if (this.state === 'DISABLED' || this.state === 'IDLE' || this.state === 'ERROR') {
+          console.log('[FriendModeBridge] Friend Mode was paused/disabled/inactive during processing; suppressing playback');
+          return;
+        }
 
         // Instruct native service to speak reply via Android TTS
-        await NativeFriendMode.speakResponse({ text: reply });
+        if (reply) {
+          await NativeFriendMode.speakResponse({ text: reply });
+        }
       });
 
       await NativeFriendMode.addListener('error', (data: { error: string }) => {
@@ -144,6 +175,32 @@ export class FriendModeBridge {
     return () => this.transcriptListeners.delete(callback);
   }
 
+  public onCountdownTick(callback: (secondsRemaining: number) => void): () => void {
+    this.countdownListeners.add(callback);
+    return () => this.countdownListeners.delete(callback);
+  }
+
+  public async answerNow(): Promise<void> {
+    if (this.isNative()) {
+      await NativeFriendMode.answerNow().catch(() => {});
+    } else {
+      this.triggerWebAnswerNow();
+    }
+  }
+
+  public async stop(): Promise<void> {
+    this.clearWebSilenceThresholdTimer();
+    friendAgent.cancelPending();
+    if (this.isNative()) {
+      await NativeFriendMode.stopPlayback().catch(() => {});
+    } else {
+      if (typeof window !== 'undefined' && window.speechSynthesis) {
+        window.speechSynthesis.cancel();
+      }
+      this.setState('ACTIVE_LISTENING');
+    }
+  }
+
   private setState(newState: FriendModeState) {
     this.state = newState;
     this.notifyState();
@@ -158,6 +215,12 @@ export class FriendModeBridge {
   private notifyTranscript(text: string, isFinal: boolean) {
     for (const listener of this.transcriptListeners) {
       listener(text, isFinal);
+    }
+  }
+
+  private notifyCountdown(secondsRemaining: number) {
+    for (const listener of this.countdownListeners) {
+      listener(secondsRemaining);
     }
   }
 
@@ -192,6 +255,8 @@ export class FriendModeBridge {
 
   public async disable(): Promise<boolean> {
     localStorage.setItem('hello_friend_mode_active', 'false');
+    friendAgent.cancelPending();
+    friendAgent.clearHistory(); // Temporary session context cleared on close
 
     if (this.isNative()) {
       try {
@@ -207,6 +272,61 @@ export class FriendModeBridge {
       this.stopWebFallback();
       this.setState('DISABLED');
       return true;
+    }
+  }
+
+  /**
+   * Pause Friend Mode: stops capture, pending AI requests, and speech.
+   * Preserves short-term memory session context (Step 07).
+   */
+  public async pause(): Promise<boolean> {
+    friendAgent.cancelPending();
+    this.cancelPendingSpeech();
+
+    if (this.isNative()) {
+      try {
+        const res = await NativeFriendMode.pauseFriendMode();
+        this.setState(res.state || 'IDLE');
+        return true;
+      } catch (err) {
+        console.error('Failed to pause native friend mode:', err);
+        this.setState('IDLE');
+        return false;
+      }
+    } else {
+      this.stopWebFallback();
+      this.setState('IDLE');
+      return true;
+    }
+  }
+
+  /**
+   * Resume Friend Mode from paused state (Step 07).
+   */
+  public async resume(): Promise<boolean> {
+    if (this.state === 'DISABLED') {
+      return this.enable();
+    }
+
+    if (this.isNative()) {
+      try {
+        const res = await NativeFriendMode.resumeFriendMode();
+        this.setState(res.state || 'LISTENING_FOR_WAKE');
+        return true;
+      } catch (err) {
+        console.error('Failed to resume native friend mode:', err);
+        return false;
+      }
+    } else {
+      this.startWebFallback();
+      return true;
+    }
+  }
+
+  public cancelPendingSpeech(): void {
+    friendAgent.cancelPending();
+    if (this.isNative()) {
+      NativeFriendMode.speakResponse({ text: '' }).catch(() => {});
     }
   }
 
@@ -361,44 +481,131 @@ export class FriendModeBridge {
     }
   }
 
+  private webSilenceThresholdTimer: any = null;
+
+  private clearWebSilenceThresholdTimer() {
+    if (this.webSilenceThresholdTimer) {
+      clearTimeout(this.webSilenceThresholdTimer);
+      this.webSilenceThresholdTimer = null;
+    }
+  }
+
+  private triggerWebAnswerNow() {
+    this.clearWebSilenceThresholdTimer();
+    this.submitWebTurn();
+  }
+
   private startWebActiveListening() {
     const SpeechRecognition =
       (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
     if (!SpeechRecognition) return;
 
+    this.clearWebSilenceThresholdTimer();
+    this.webTurnText = '';
+    this.webLastSpeechTime = Date.now();
+
     this.setState('ACTIVE_LISTENING');
     try {
       const activeRec = new SpeechRecognition();
-      activeRec.continuous = false;
+      activeRec.continuous = true;
       activeRec.interimResults = true;
       activeRec.lang = this.language === 'ta-IN' ? 'ta-IN' : 'en-IN';
 
-      activeRec.onresult = async (event: any) => {
-        let finalUtterance = '';
-        for (let i = 0; i < event.results.length; i++) {
+      activeRec.onresult = (event: any) => {
+        this.webLastSpeechTime = Date.now();
+        this.clearWebSilenceThresholdTimer();
+
+        let interim = '';
+        let hasFinal = false;
+        for (let i = event.resultIndex; i < event.results.length; i++) {
+          const trans = event.results[i][0].transcript;
           if (event.results[i].isFinal) {
-            finalUtterance += event.results[i][0].transcript;
+            hasFinal = true;
+            if (!this.webTurnText.toLowerCase().includes(trans.trim().toLowerCase())) {
+              this.webTurnText += (this.webTurnText ? ' ' : '') + trans.trim();
+            }
+          } else {
+            interim += trans;
           }
         }
 
-        if (finalUtterance.trim()) {
-          this.notifyTranscript(finalUtterance, true);
-          this.setState('THINKING');
-          const reply = await friendAgent.processMessage(finalUtterance);
-          this.speakWeb(reply, () => {
-            this.setState('LISTENING_FOR_WAKE');
-            this.startWebFallback();
-          });
+        this.notifyTranscript(this.webTurnText + (interim ? ' ' + interim : ''), false);
+
+        if (hasFinal && this.webTurnText.trim()) {
+          // Short silence threshold of 1500ms allows brief pauses without cutting off
+          this.clearWebSilenceThresholdTimer();
+          this.webSilenceThresholdTimer = setTimeout(() => {
+            this.webSilenceThresholdTimer = null;
+            try { activeRec.stop(); } catch {}
+            this.submitWebTurn();
+          }, 1500);
         }
       };
 
-      activeRec.onerror = () => {
-        this.setState('LISTENING_FOR_WAKE');
-        this.startWebFallback();
+      activeRec.onerror = (e: any) => {
+        if (this.webTurnText.trim()) {
+          this.submitWebTurn();
+        } else {
+          this.setState('LISTENING_FOR_WAKE');
+          this.startWebFallback();
+        }
       };
 
       activeRec.start();
+      this.webRecognition = activeRec;
     } catch {
+      this.startWebFallback();
+    }
+  }
+
+  private startWebSilenceCountdown(rec: any) {
+    if (this.webTurnTimer) {
+      clearInterval(this.webTurnTimer);
+      this.webTurnTimer = null;
+    }
+    try { rec.stop(); } catch {}
+    this.submitWebTurn();
+  }
+
+  private async submitWebTurn() {
+    this.clearWebSilenceThresholdTimer();
+    const textToSubmit = this.webTurnText.trim();
+    this.webTurnText = '';
+    if (!textToSubmit) {
+      this.setState('LISTENING_FOR_WAKE');
+      this.startWebFallback();
+      return;
+    }
+
+    this.notifyTranscript(textToSubmit, true);
+    this.setState('THINKING');
+
+    const isTamil = this.language === 'ta-IN';
+    const isRetrieval = /check|weather|score|time|search|find|theriyuma/i.test(textToSubmit);
+    const ackPhrase = isRetrieval
+      ? (isTamil ? 'செக் பண்றேன் இருங்க.' : 'Let me check.')
+      : (isTamil ? 'யோசிக்கிறேன் இருங்க.' : 'Let me think.');
+
+    let ackTimer: any = setTimeout(() => {
+      if (this.state === 'THINKING') {
+        this.speakWeb(ackPhrase);
+      }
+    }, 800);
+
+    const reply = await friendAgent.processMessage(textToSubmit, this.language);
+    clearTimeout(ackTimer);
+
+    if (this.state === 'DISABLED' || this.state === 'IDLE') {
+      return;
+    }
+
+    if (reply) {
+      this.speakWeb(reply, () => {
+        this.setState('LISTENING_FOR_WAKE');
+        this.startWebFallback();
+      });
+    } else {
+      this.setState('LISTENING_FOR_WAKE');
       this.startWebFallback();
     }
   }
@@ -431,6 +638,10 @@ export class FriendModeBridge {
   }
 
   private stopWebFallback() {
+    if (this.webTurnTimer) {
+      clearInterval(this.webTurnTimer);
+      this.webTurnTimer = null;
+    }
     if (this.webRecognition) {
       try {
         this.webRecognition.stop();

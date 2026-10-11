@@ -57,6 +57,8 @@ export const FriendModeModal: React.FC<FriendModeModalProps> = ({
       setLiveTranscript(text);
     });
 
+
+
     // Check permissions
     friendModeBridge.checkPermissions().then(setPermissions);
     friendModeBridge.syncStatus();
@@ -147,11 +149,12 @@ export const FriendModeModal: React.FC<FriendModeModalProps> = ({
             Listening for "Hello macha"
           </span>
         );
+      case 'WAITING_FOR_FINISH':
       case 'ACTIVE_LISTENING':
         return (
           <span className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium bg-red-500/10 text-red-600 dark:text-red-400 border border-red-500/20 animate-pulse">
             <span className="w-2 h-2 rounded-full bg-red-500" />
-            Capturing Speech...
+            Listening...
           </span>
         );
       case 'THINKING':
@@ -295,17 +298,50 @@ export const FriendModeModal: React.FC<FriendModeModalProps> = ({
             </div>
 
             {isEnabled && (
-              <div className="pt-2 border-t border-zinc-200/60 dark:border-zinc-800/60 flex items-center justify-between gap-3">
-                <span className="text-[11px] text-zinc-500 truncate">
-                  {liveTranscript ? `Heard: "${liveTranscript}"` : 'Listening for wake phrase in background...'}
-                </span>
-                <button
-                  type="button"
-                  onClick={handleManualWakeTrigger}
-                  className="px-2.5 py-1 text-[11px] font-medium rounded-lg bg-orange-500/10 hover:bg-orange-500/20 text-orange-600 dark:text-orange-400 transition-colors shrink-0"
-                >
-                  Test Wake Trigger
-                </button>
+              <div className="pt-2 border-t border-zinc-200/60 dark:border-zinc-800/60 space-y-2">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="text-[11px] text-zinc-500 truncate flex-1 min-w-40">
+                    {liveTranscript ? `Heard: "${liveTranscript}"` : 'Listening for speech in background...'}
+                  </span>
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    {liveTranscript && state === 'ACTIVE_LISTENING' && (
+                      <button
+                        type="button"
+                        onClick={() => friendModeBridge.answerNow()}
+                        className="px-2.5 py-1 text-[11px] font-semibold rounded-lg bg-orange-600 hover:bg-orange-700 text-white shadow-xs transition-all flex items-center gap-1 animate-pulse"
+                      >
+                        <Play className="w-3 h-3 fill-current" />
+                        <span>Answer Now</span>
+                      </button>
+                    )}
+
+                    <button
+                      type="button"
+                      onClick={() => friendModeBridge.stop()}
+                      disabled={state !== 'SPEAKING' && state !== 'THINKING'}
+                      className="px-2.5 py-1 text-[11px] font-semibold rounded-lg bg-red-600 hover:bg-red-700 disabled:opacity-40 text-white shadow-xs transition-all flex items-center gap-1"
+                    >
+                      <Square className="w-3 h-3 fill-current" />
+                      <span>Stop</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => (state === 'IDLE' ? friendModeBridge.resume() : friendModeBridge.pause())}
+                      className="px-2.5 py-1 text-[11px] font-medium rounded-lg bg-zinc-200 dark:bg-zinc-800 hover:bg-zinc-300 dark:hover:bg-zinc-700 text-zinc-700 dark:text-zinc-300 transition-colors"
+                    >
+                      {state === 'IDLE' ? 'Resume' : 'Pause'}
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={handleManualWakeTrigger}
+                      className="px-2 py-1 text-[11px] font-medium rounded-lg bg-orange-500/10 hover:bg-orange-500/20 text-orange-600 dark:text-orange-400 transition-colors"
+                    >
+                      Wake
+                    </button>
+                  </div>
+                </div>
               </div>
             )}
           </div>

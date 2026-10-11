@@ -23,15 +23,41 @@ import {
   handleOpenRouterCallback,
   handleOpenRouterStatus,
   handleOpenRouterDisconnect,
+  handleOpenRouterSaveKey,
   getAppUrl,
 } from './src/server/openrouter-oauth.ts';
-import { handleChatStream } from './src/server/chat-service.ts';
+import { handleChatStream, handleChatCancel } from './src/server/chat-service.ts';
 import { chatRateLimit, apiRateLimit } from './src/server/rate-limit.ts';
 import { validateAndGetEncryptionKey } from './src/server/encryption.ts';
 import { decryptCredential } from './src/server/encryption.ts';
 import { getFreeChatModels } from './src/server/model-registry.ts';
 import { connectorRegistry } from './src/server/plugins/registry.ts';
 import { handleGoogleDriveConnect, handleGoogleDriveCallback } from './src/server/plugins/google-drive-oauth.ts';
+import {
+  handleGetMemories,
+  handleSaveMemory,
+  handleUpdateMemory,
+  handleDeleteMemory,
+  handleClearMemories,
+} from './src/server/friend-memories-service.ts';
+import {
+  requireAdmin,
+  handleAdminListTasks,
+  handleAdminCreateTask,
+  handleAdminUpdateTask,
+  handleAdminDeleteTask,
+  handleAdminListPromotions,
+  handleAdminCreatePromotion,
+  handleAdminUpdatePromotion,
+  handleAdminDeletePromotion,
+  handleAdminGetEmergencySwitch,
+  handleAdminToggleEmergencySwitch,
+  handleAdminGetAuditLogs,
+  handleUserGetActiveTasks,
+  handleUserInteractTask,
+  handleUserGetActivePromotions,
+  handleUserOptOutSpokenPromotions,
+} from './src/server/admin-service.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -57,9 +83,30 @@ app.use('/api', (_req, res, next) => {
 });
 
 // Basic middleware
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  if (origin) {
+    if (
+      origin.includes('localhost') ||
+      origin.includes('127.0.0.1') ||
+      origin.startsWith('capacitor://') ||
+      origin.includes('vercel.app')
+    ) {
+      res.setHeader('Access-Control-Allow-Origin', origin);
+      res.setHeader('Access-Control-Allow-Credentials', 'true');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
+    }
+  }
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(200);
+  }
+  next();
+});
 app.use(express.json({ limit: '1mb' }));
 app.use(cookieParser());
 app.use(apiRateLimit);
+
 
 // --- Public Config Endpoint (NO SECRETS) ---
 app.get('/api/health', asyncRoute(async (_req, res) => {
@@ -235,8 +282,10 @@ app.post('/api/auth/logout', asyncRoute(async (req, res) => {
 
 // --- OpenRouter OAuth Routes ---
 app.get('/api/openrouter/connect', requireAuth, asyncRoute(handleOpenRouterConnect));
+app.post('/api/openrouter/connect', requireAuth, asyncRoute(handleOpenRouterConnect));
 app.get(['/api/openrouter/callback', '/api/openrouter/callback/'], asyncRoute(handleOpenRouterCallback));
 app.get('/api/openrouter/status', requireAuth, asyncRoute(handleOpenRouterStatus));
+app.post('/api/openrouter/key', requireAuth, asyncRoute(handleOpenRouterSaveKey));
 app.post('/api/openrouter/disconnect', requireAuth, asyncRoute(handleOpenRouterDisconnect));
 
 app.get('/api/models', asyncRoute(async (_req, res) => {
@@ -307,6 +356,35 @@ app.delete('/api/chats/:id', requireAuth, asyncRoute(async (req, res) => {
 
 // --- Streaming Chat Route ---
 app.post('/api/chat', requireAuth, chatRateLimit, asyncRoute(handleChatStream));
+app.post('/api/chat/cancel', requireAuth, asyncRoute(handleChatCancel));
+
+// --- Friend Mode Persistent Memories Routes (Step 10) ---
+app.get('/api/friend/memories', requireAuth, asyncRoute(handleGetMemories));
+app.post('/api/friend/memories', requireAuth, asyncRoute(handleSaveMemory));
+app.put('/api/friend/memories/:id', requireAuth, asyncRoute(handleUpdateMemory));
+app.delete('/api/friend/memories/:id', requireAuth, asyncRoute(handleDeleteMemory));
+app.delete('/api/friend/memories', requireAuth, asyncRoute(handleClearMemories));
+
+// --- Daily Tasks & Promotions (User Endpoints) ---
+app.get('/api/tasks/active', asyncRoute(handleUserGetActiveTasks));
+app.post('/api/tasks/:id/interact', requireAuth, asyncRoute(handleUserInteractTask));
+app.get('/api/promotions/active', asyncRoute(handleUserGetActivePromotions));
+app.post('/api/promotions/opt-out', requireAuth, asyncRoute(handleUserOptOutSpokenPromotions));
+
+// --- Founder Admin Panel Routes (Sathish / Server-Enforced Role) ---
+app.get('/api/admin/tasks', requireAuth, requireAdmin, asyncRoute(handleAdminListTasks));
+app.post('/api/admin/tasks', requireAuth, requireAdmin, asyncRoute(handleAdminCreateTask));
+app.put('/api/admin/tasks/:id', requireAuth, requireAdmin, asyncRoute(handleAdminUpdateTask));
+app.delete('/api/admin/tasks/:id', requireAuth, requireAdmin, asyncRoute(handleAdminDeleteTask));
+
+app.get('/api/admin/promotions', requireAuth, requireAdmin, asyncRoute(handleAdminListPromotions));
+app.post('/api/admin/promotions', requireAuth, requireAdmin, asyncRoute(handleAdminCreatePromotion));
+app.put('/api/admin/promotions/:id', requireAuth, requireAdmin, asyncRoute(handleAdminUpdatePromotion));
+app.delete('/api/admin/promotions/:id', requireAuth, requireAdmin, asyncRoute(handleAdminDeletePromotion));
+
+app.get('/api/admin/emergency-switch', requireAuth, requireAdmin, asyncRoute(handleAdminGetEmergencySwitch));
+app.post('/api/admin/emergency-switch', requireAuth, requireAdmin, asyncRoute(handleAdminToggleEmergencySwitch));
+app.get('/api/admin/audit-logs', requireAuth, requireAdmin, asyncRoute(handleAdminGetAuditLogs));
 
 app.use('/api', (_req, res) => res.status(404).json({ error: 'API route not found' }));
 const apiErrorHandler: ErrorRequestHandler = (error, _req, res, next) => {

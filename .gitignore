@@ -17,3 +17,10 @@ android/local.properties
 android/.idea/
 android/*.iml
 android/app/*.iml
+
+# Android Signing & Secrets
+*.jks
+*.keystore
+*signing.properties
+*keystore.properties
+

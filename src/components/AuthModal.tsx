@@ -1,6 +1,6 @@
-import { signInWithPopup, GoogleAuthProvider } from 'firebase/auth';
-import { auth } from '../lib/firebase-auth.ts';
 import { readApiResponse } from '../lib/api-response.ts';
+import { getApiUrl, setStoredAuthToken } from '../lib/api.ts';
+import { performGoogleSignIn } from '../lib/native-google-auth.ts';
 import React, { useState } from 'react';
 import { X, Mail, Lock, User as UserIcon, AlertCircle, ArrowRight, ShieldCheck, Check } from 'lucide-react';
 import type { User } from '../types/index.ts';
@@ -37,15 +37,20 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       const endpoint = tab === 'register' ? '/api/auth/register' : '/api/auth/login';
       const body = tab === 'register' ? { email, password, name } : { email, password };
 
-      const res = await fetch(endpoint, {
+      const res = await fetch(getApiUrl(endpoint), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
         body: JSON.stringify(body),
       });
 
       const data = await readApiResponse(res);
       if (!res.ok) {
         throw new Error(data.error || 'Authentication failed');
+      }
+
+      if (data.token) {
+        setStoredAuthToken(data.token);
       }
 
       onAuthSuccess(data.user);
@@ -61,18 +66,22 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     setError(null);
     setLoading(true);
     try {
-      const result = await signInWithPopup(auth, new GoogleAuthProvider());
-      const idToken = await result.user.getIdToken();
+      const { idToken } = await performGoogleSignIn();
 
-      const res = await fetch('/api/auth/google', {
+      const res = await fetch(getApiUrl('/api/auth/google'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
         body: JSON.stringify({ idToken }),
       });
 
       const data = await readApiResponse(res);
       if (!res.ok) {
         throw new Error(data.error || 'Google sign-in failed');
+      }
+
+      if (data.token) {
+        setStoredAuthToken(data.token);
       }
 
       onAuthSuccess(data.user);
@@ -82,8 +91,10 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         setError(`Google sign-in is not enabled for ${window.location.hostname}. You can use email sign-in here. The site owner must add this hostname in Firebase Authentication → Settings → Authorized domains.`);
       } else if (err?.code === 'auth/popup-blocked') {
         setError('Your browser blocked the Google sign-in window. Allow popups for this site, then try again, or use email sign-in.');
-      } else if (err?.code === 'auth/popup-closed-by-user') {
-        setError('Google sign-in was closed before completion. You can try again or use email sign-in.');
+      } else if (err?.code === 'auth/popup-closed-by-user' || err?.message?.includes('cancelled')) {
+        setError('Google sign-in was cancelled. You can try again or use email sign-in.');
+      } else if (err?.message?.includes('code 10') || err?.message?.includes('DEVELOPER_ERROR')) {
+        setError('Google Sign-In on Android requires adding SHA-1 to Firebase Console. Alternatively, sign in using Email and Password above.');
       } else {
         setError(err.message || 'Google sign-in failed');
       }

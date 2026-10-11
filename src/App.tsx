@@ -12,17 +12,26 @@ import { ModelsModal } from './components/ModelsModal.tsx';
 import { FriendModeModal } from './components/FriendModeModal.tsx';
 import { TeacherModeModal } from './components/TeacherModeModal.tsx';
 import { SchedulingModal } from './components/SchedulingModal.tsx';
+import { HistoryModal } from './components/HistoryModal.tsx';
+import { AdminPanelModal } from './components/AdminPanelModal.tsx';
 import { FeatureNoticeModal, type FeatureNoticeConfig } from './components/FeatureNoticeModal.tsx';
-import { logOutGoogle } from './lib/firebase-auth.ts';
+import { auth, logOutGoogle } from './lib/firebase-auth.ts';
+import { onAuthStateChanged } from 'firebase/auth';
 import { formatChatToMarkdown, downloadMarkdownFile } from './lib/export-markdown.ts';
-import { apiRequest, parseApiError } from './lib/api.ts';
-import type {
-  User,
-  ProviderConnection,
-  Chat,
-  ChatMessage,
-  AiMode,
-  TaskCategory,
+import { apiRequest, parseApiError, getApiUrl, setStoredAuthToken, getStoredAuthToken, clearStoredAuthToken, parseApiResponse } from './lib/api.ts';
+import { friendModeBridge } from './services/friend-mode/FriendModeBridge.ts';
+import { Capacitor } from '@capacitor/core';
+import { NativeGoogleAuth } from './lib/native-google-auth.ts';
+import {
+  validateReturnScreen,
+  type ReturnScreen,
+  type PendingAction,
+  type User,
+  type ProviderConnection,
+  type Chat,
+  type ChatMessage,
+  type AiMode,
+  type TaskCategory,
 } from './types/index.ts';
 
 export default function App() {
@@ -33,6 +42,7 @@ export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [providerStatus, setProviderStatus] = useState<ProviderConnection | null>(null);
   const [isConnectingOpenRouter, setIsConnectingOpenRouter] = useState(false);
+  const openRouterPollingRef = useRef<any>(null);
 
   // Chat & History state
   const [chats, setChats] = useState<Chat[]>([]);
@@ -49,6 +59,9 @@ export default function App() {
   const [isIntegrationsOpen, setIsIntegrationsOpen] = useState(false);
   const [isAuthOpen, setIsAuthOpen] = useState(false);
   const [isFriendModeOpen, setIsFriendModeOpen] = useState(false);
+  const [isHistoryOpen, setIsHistoryOpen] = useState(false);
+  const [historyTab, setHistoryTab] = useState<'conversations' | 'memories'>('conversations');
+  const [isAdminOpen, setIsAdminOpen] = useState(false);
   const [isTeacherModeOpen, setIsTeacherModeOpen] = useState(false);
   const [isSchedulingOpen, setIsSchedulingOpen] = useState(false);
   const [featureNotice, setFeatureNotice] = useState<FeatureNoticeConfig | null>(null);
@@ -77,16 +90,49 @@ export default function App() {
   useEffect(() => {
     fetchCurrentUser();
 
+    // Listen to Firebase auth state: if user is logged into Firebase but backend has no session, exchange ID token automatically
+    const unsubscribe = onAuthStateChanged(auth, async (fbUser) => {
+      if (fbUser) {
+        const storedToken = getStoredAuthToken();
+        if (!storedToken) {
+          try {
+            const idToken = await fbUser.getIdToken();
+            const res = await fetch(getApiUrl('/api/auth/google'), {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              credentials: 'include',
+              body: JSON.stringify({ idToken }),
+            });
+            const data = await parseApiResponse<{ user: User; token?: string }>(res);
+            if (data.token) {
+              setStoredAuthToken(data.token);
+            }
+            setUser(data.user);
+            fetchProviderStatus();
+            fetchChats();
+          } catch (err) {
+            console.warn('[App] Background Firebase token sync:', err);
+          }
+        }
+      }
+    });
+
+    // Check pending native deep links on mount (for Android activity recreation / deep link cold launch)
+    checkPendingNativeDeepLink();
+
     // Check URL parameters for OAuth redirects (e.g. mobile full-page redirects)
     if (typeof window !== 'undefined') {
       const params = new URLSearchParams(window.location.search);
       const connected = params.get('integration_connected');
+      const returnScreen = params.get('return_screen');
+      const state = params.get('state') || undefined;
       const error = params.get('integration_error');
       if (connected === 'openrouter') {
-        fetchProviderStatus();
-        setBannerAlert({
-          message: 'OpenRouter connected successfully! Free models are ready.',
-          type: 'success',
+        handleOAuthReturn({
+          provider: 'openrouter',
+          status: 'success',
+          returnScreen: returnScreen || undefined,
+          state,
         });
         window.history.replaceState({}, document.title, window.location.pathname);
       } else if (connected === 'google-drive') {
@@ -96,13 +142,18 @@ export default function App() {
         });
         window.history.replaceState({}, document.title, window.location.pathname);
       } else if (error) {
-        setBannerAlert({
-          message: decodeURIComponent(error),
-          type: 'error',
+        handleOAuthReturn({
+          provider: 'openrouter',
+          status: 'error',
+          returnScreen: returnScreen || undefined,
+          error: decodeURIComponent(error),
+          state,
         });
         window.history.replaceState({}, document.title, window.location.pathname);
       }
     }
+
+    return () => unsubscribe();
   }, []);
 
   useEffect(() => {
@@ -124,6 +175,7 @@ export default function App() {
       console.error('Failed to fetch user:', err);
     }
   };
+
 
   const fetchProviderStatus = async () => {
     try {
@@ -165,23 +217,205 @@ export default function App() {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, routingStatus]);
 
+  const processedOAuthStatesRef = useRef<Set<string>>(new Set());
+  const handleSendMessageRef = useRef<((prompt?: string, chatId?: string) => Promise<void>) | null>(null);
+
+  const restoreScreen = (targetScreen: ReturnScreen) => {
+    setIsSettingsOpen(false);
+    setIsFriendModeOpen(false);
+    setIsHistoryOpen(false);
+    setIsAdminOpen(false);
+    setIsTeacherModeOpen(false);
+    setIsModelsOpen(false);
+    setIsIntegrationsOpen(false);
+    setIsSchedulingOpen(false);
+
+    switch (targetScreen) {
+      case 'settings':
+        setIsSettingsOpen(true);
+        break;
+      case 'friend-mode':
+        setIsFriendModeOpen(true);
+        break;
+      case 'teacher-mode':
+        setIsTeacherModeOpen(true);
+        break;
+      case 'models':
+        setIsModelsOpen(true);
+        break;
+      case 'integrations':
+        setIsIntegrationsOpen(true);
+        break;
+      case 'scheduling':
+        setIsSchedulingOpen(true);
+        break;
+      case 'chat':
+      default:
+        break;
+    }
+  };
+
+  const handleOAuthReturn = async (params: {
+    provider?: string;
+    status: 'success' | 'error';
+    returnScreen?: ReturnScreen | string;
+    error?: string;
+    state?: string;
+    pendingAction?: PendingAction;
+  }) => {
+    stopPollingOpenRouter();
+    setIsConnectingOpenRouter(false);
+
+    const activeState = params.state || (typeof window !== 'undefined' ? localStorage.getItem('hello_active_oauth_state') : null);
+
+    let storedSession: any = null;
+    if (activeState && typeof window !== 'undefined') {
+      try {
+        const raw = localStorage.getItem(`hello_oauth_session_${activeState}`);
+        if (raw) storedSession = JSON.parse(raw);
+      } catch (_) {}
+    }
+
+    // Exactly-once execution guard: prevents duplicated actions across deep links, polling, window messages, and activity reloads
+    const stateKey = activeState || (params.state ? `state_${params.state}` : `time_${Math.floor(Date.now() / 4000)}`);
+    if (processedOAuthStatesRef.current.has(stateKey) || (storedSession && storedSession.consumed)) {
+      console.log('[OAuth Return] State already processed, skipping duplicate:', stateKey);
+      return;
+    }
+    processedOAuthStatesRef.current.add(stateKey);
+    if (storedSession && activeState && typeof window !== 'undefined') {
+      storedSession.consumed = true;
+      try {
+        localStorage.setItem(`hello_oauth_session_${activeState}`, JSON.stringify(storedSession));
+        localStorage.removeItem('hello_active_oauth_state');
+      } catch (_) {}
+    }
+
+    const rawTarget = params.returnScreen || storedSession?.returnScreen;
+    const targetScreen = validateReturnScreen(rawTarget);
+
+    if (params.status === 'error') {
+      const errMsg = params.error || 'Authorization was cancelled or rejected by the provider.';
+      setBannerAlert({ message: errMsg, type: 'error' });
+      restoreScreen(targetScreen);
+      return;
+    }
+
+    // Success flow: MUST verify provider connection through backend before declaring connected or running pending action
+    try {
+      const statusData = await apiRequest<{ connected: boolean; updatedAt?: string }>('/api/openrouter/status');
+      if (!statusData || !statusData.connected) {
+        setBannerAlert({
+          message: 'Unable to verify OpenRouter connection with backend. Please retry.',
+          type: 'error',
+        });
+        restoreScreen(targetScreen);
+        return;
+      }
+
+      setProviderStatus({
+        id: 'openrouter-status',
+        user_id: user?.id || '',
+        provider: 'openrouter',
+        connection_status: 'connected',
+        created_at: '',
+        updated_at: statusData.updatedAt || '',
+      });
+
+      setBannerAlert({
+        message: 'OpenRouter connected successfully! Free models are ready.',
+        type: 'success',
+      });
+      setTimeout(() => setBannerAlert(null), 4000);
+
+      // Restore originating screen
+      restoreScreen(targetScreen);
+
+      // Restore pending action exactly once
+      const pendingAction: PendingAction | undefined =
+        params.pendingAction || storedSession?.pendingAction;
+
+      if (pendingAction) {
+        if (pendingAction.type === 'send_prompt' && pendingAction.prompt) {
+          if (targetScreen === 'chat') {
+            if (handleSendMessageRef.current) {
+              handleSendMessageRef.current(pendingAction.prompt, pendingAction.chatId || undefined);
+            } else {
+              setInput(pendingAction.prompt);
+            }
+          } else {
+            setInput(pendingAction.prompt);
+          }
+        }
+      }
+
+      // Safeguard Friend Mode microphone resumption:
+      // Resume microphone capture only if Friend Mode remains enabled, permissions allow it and Android startup conditions permit it.
+      // If user paused or closed Friend Mode during authorization, respect that newer state.
+      const currentFriendState = friendModeBridge.getState();
+      const wasActiveBefore = Boolean(storedSession?.friendModeActiveBeforeNav);
+
+      if (currentFriendState !== 'DISABLED' && wasActiveBefore) {
+        const perms = await friendModeBridge.checkPermissions();
+        if (perms.microphone === 'granted') {
+          console.log('[OAuth Return] Resuming Friend Mode wake listening');
+          await friendModeBridge.enable(friendModeBridge.getLanguage(), friendModeBridge.isFloatingEmojiEnabled());
+        } else {
+          console.log('[OAuth Return] Microphone permission not granted, leaving Friend Mode paused');
+        }
+      } else {
+        console.log('[OAuth Return] Friend Mode disabled or closed by user, respecting newer state');
+      }
+    } catch (err: any) {
+      console.warn('[OAuth Return] Verification error:', err);
+      setBannerAlert({
+        message: 'Failed to verify OpenRouter status. Please check your connection.',
+        type: 'error',
+      });
+      restoreScreen(targetScreen);
+    }
+  };
+
+  const checkPendingNativeDeepLink = async () => {
+    if (Capacitor.isNativePlatform()) {
+      try {
+        const res = await NativeGoogleAuth.getPendingDeepLink();
+        if (res?.url) {
+          const urlObj = new URL(res.url.replace(/^hello:\/\//, 'https://dummy.local/'));
+          const provider = urlObj.searchParams.get('provider');
+          const status = (urlObj.searchParams.get('status') as 'success' | 'error') || 'success';
+          const returnScreen = urlObj.searchParams.get('return_screen') || undefined;
+          const state = urlObj.searchParams.get('state') || undefined;
+          const error = urlObj.searchParams.get('error') || undefined;
+          if (provider === 'openrouter') {
+            await handleOAuthReturn({ provider, status, returnScreen, state, error });
+          }
+        }
+      } catch (e) {
+        console.warn('[App] Error checking pending deep link:', e);
+      }
+    }
+  };
+
   // Listen for OAuth PKCE postMessage from OpenRouter popup
   useEffect(() => {
     const handleMessage = (event: MessageEvent) => {
       if (event.origin !== window.location.origin) return;
       if (event.data?.type === 'OAUTH_AUTH_SUCCESS' && event.data?.provider === 'openrouter') {
-        fetchProviderStatus();
-        setIsConnectingOpenRouter(false);
-        setBannerAlert({
-          message: 'OpenRouter connected successfully! Free models are ready.',
-          type: 'success',
+        handleOAuthReturn({
+          provider: 'openrouter',
+          status: 'success',
+          returnScreen: event.data.returnScreen,
+          pendingAction: event.data.pendingAction,
+          state: event.data.state,
         });
-        setTimeout(() => setBannerAlert(null), 4000);
-      } else if (event.data?.type === 'OAUTH_AUTH_ERROR') {
-        setIsConnectingOpenRouter(false);
-        setBannerAlert({
-          message: event.data?.error || 'Failed to connect OpenRouter. Please try again.',
-          type: 'error',
+      } else if (event.data?.type === 'OAUTH_AUTH_ERROR' && event.data?.provider === 'openrouter') {
+        handleOAuthReturn({
+          provider: 'openrouter',
+          status: 'error',
+          returnScreen: event.data.returnScreen,
+          error: event.data.error,
+          state: event.data.state,
         });
       }
     };
@@ -190,18 +424,172 @@ export default function App() {
     return () => window.removeEventListener('message', handleMessage);
   }, []);
 
-  // Initiate OpenRouter PKCE Connect Flow
-  const handleConnectOpenRouter = async () => {
+  const stopPollingOpenRouter = () => {
+    if (openRouterPollingRef.current) {
+      clearInterval(openRouterPollingRef.current);
+      openRouterPollingRef.current = null;
+    }
+  };
+
+  const startPollingOpenRouter = (expectedState?: string) => {
+    stopPollingOpenRouter();
+    let attempts = 0;
+    const maxAttempts = 90; // 3 minutes total (poll every 2s)
+
+    openRouterPollingRef.current = setInterval(async () => {
+      attempts++;
+      if (attempts > maxAttempts) {
+        stopPollingOpenRouter();
+        setIsConnectingOpenRouter(false);
+        return;
+      }
+
+      try {
+        const data = await apiRequest<{ connected: boolean; updatedAt?: string }>('/api/openrouter/status');
+        if (data && data.connected) {
+          await handleOAuthReturn({
+            provider: 'openrouter',
+            status: 'success',
+            state: expectedState,
+          });
+        }
+      } catch {
+        // ignore network hiccups while polling
+      }
+    }, 2000);
+  };
+
+  // Re-check OpenRouter connection status and deep links when window regains focus or app resumes
+  useEffect(() => {
+    const handleVisibilityOrFocus = async () => {
+      await checkPendingNativeDeepLink();
+      if (isConnectingOpenRouter) {
+        try {
+          const data = await apiRequest<{ connected: boolean; updatedAt?: string }>('/api/openrouter/status');
+          if (data && data.connected) {
+            await handleOAuthReturn({
+              provider: 'openrouter',
+              status: 'success',
+            });
+          }
+        } catch (_) {}
+      }
+    };
+
+    window.addEventListener('focus', handleVisibilityOrFocus);
+    document.addEventListener('visibilitychange', handleVisibilityOrFocus);
+    return () => {
+      window.removeEventListener('focus', handleVisibilityOrFocus);
+      document.removeEventListener('visibilitychange', handleVisibilityOrFocus);
+    };
+  }, [isConnectingOpenRouter, user]);
+
+  useEffect(() => {
+    return () => {
+      stopPollingOpenRouter();
+    };
+  }, []);
+
+  // Initiate OpenRouter PKCE Connect Flow with Originating Screen & Pending Action preservation
+  const handleConnectOpenRouter = async (
+    explicitReturnScreen?: ReturnScreen,
+    explicitPendingAction?: PendingAction
+  ) => {
     if (!user) {
       setIsAuthOpen(true);
       return;
     }
 
+    let returnScreen: ReturnScreen = explicitReturnScreen || 'chat';
+    if (!explicitReturnScreen) {
+      if (isFriendModeOpen) returnScreen = 'friend-mode';
+      else if (isTeacherModeOpen) returnScreen = 'teacher-mode';
+      else if (isModelsOpen) returnScreen = 'models';
+      else if (isIntegrationsOpen) returnScreen = 'integrations';
+      else if (isSchedulingOpen) returnScreen = 'scheduling';
+      else if (isSettingsOpen) returnScreen = 'settings';
+      else returnScreen = 'chat';
+    }
+
+    let pendingAction = explicitPendingAction;
+    if (!pendingAction && returnScreen === 'chat' && input.trim()) {
+      pendingAction = {
+        type: 'send_prompt',
+        prompt: input.trim(),
+        chatId: activeChatId,
+      };
+    } else if (!pendingAction && returnScreen === 'friend-mode') {
+      pendingAction = {
+        type: 'resume_friend_mode',
+      };
+    }
+
+    const friendModeActiveBeforeNav = friendModeBridge.getState() !== 'DISABLED';
+
     try {
       setIsConnectingOpenRouter(true);
-      const data = await apiRequest<{ url?: string }>('/api/openrouter/connect');
+      const params = new URLSearchParams();
+      if (returnScreen) params.set('return_screen', returnScreen);
+      if (pendingAction) params.set('pending_action', JSON.stringify(pendingAction));
+      const queryString = params.toString() ? `?${params.toString()}` : '';
+
+      let data: {
+        url?: string;
+        state?: string;
+        returnScreen?: ReturnScreen;
+      };
+
+      try {
+        data = await apiRequest<{
+          url?: string;
+          state?: string;
+          returnScreen?: ReturnScreen;
+        }>(`/api/openrouter/connect${queryString}`, {
+          method: 'GET',
+        });
+      } catch (err: any) {
+        if (err?.status === 404 || err?.status === 405) {
+          data = await apiRequest<{
+            url?: string;
+            state?: string;
+            returnScreen?: ReturnScreen;
+          }>('/api/openrouter/connect', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              returnScreen,
+              pendingAction,
+            }),
+          });
+        } else {
+          throw err;
+        }
+      }
+
       if (!data.url) {
         throw new Error('No authorization URL returned');
+      }
+
+      if (data.state && typeof window !== 'undefined') {
+        const sessionRecord = {
+          state: data.state,
+          returnScreen: data.returnScreen || returnScreen,
+          pendingAction,
+          friendModeActiveBeforeNav,
+          timestamp: Date.now(),
+          consumed: false,
+        };
+        try {
+          localStorage.setItem(`hello_oauth_session_${data.state}`, JSON.stringify(sessionRecord));
+          localStorage.setItem('hello_active_oauth_state', data.state);
+        } catch (_) {}
+      }
+
+      // If running as native Android/iOS Capacitor app, open system browser
+      if (Capacitor.isNativePlatform()) {
+        await NativeGoogleAuth.openSystemUrl({ url: data.url });
+        startPollingOpenRouter(data.state);
+        return;
       }
 
       const isMobile = typeof window !== 'undefined' && (window.innerWidth < 640 || /iPhone|iPad|iPod|Android/i.test(navigator.userAgent));
@@ -221,6 +609,7 @@ export default function App() {
       }
     } catch (err: any) {
       console.error('OpenRouter connect error:', err);
+      stopPollingOpenRouter();
       setBannerAlert({
         message: err.message || 'Failed to open OpenRouter authorization window',
         type: 'error',
@@ -231,6 +620,8 @@ export default function App() {
 
   const handleDisconnectOpenRouter = async () => {
     try {
+      stopPollingOpenRouter();
+      setIsConnectingOpenRouter(false);
       await apiRequest('/api/openrouter/disconnect', { method: 'POST' });
       fetchProviderStatus();
       setBannerAlert({
@@ -245,14 +636,21 @@ export default function App() {
 
   const handleLogout = async () => {
     try {
+      if (isStreaming || isStreamingRef.current) {
+        handleStopStreaming();
+      }
+      friendModeBridge.cancelPendingSpeech();
+      await friendModeBridge.disable();
       await apiRequest('/api/auth/logout', { method: 'POST' });
       await logOutGoogle().catch(() => {});
+      clearStoredAuthToken();
       setUser(null);
       setProviderStatus(null);
       setChats([]);
       setActiveChatId(null);
       setMessages([]);
       setSelectedModelId(null);
+
     } catch (err) {
       console.error('Logout error:', err);
     }
@@ -353,7 +751,7 @@ export default function App() {
   };
 
   // Main Prompt Submission & SSE Streaming
-  const handleSendMessage = async (customPrompt?: string) => {
+  const handleSendMessage = async (customPrompt?: string, targetChatId?: string) => {
     const promptToSend = customPrompt || input;
     // Synchronous ref guard against duplicate calls, double clicks, and StrictMode double-triggers
     if (!promptToSend.trim() || isStreamingRef.current) return;
@@ -363,12 +761,18 @@ export default function App() {
       return;
     }
 
+    const currentChatId = targetChatId || activeChatId;
+
     if (providerStatus?.connection_status !== 'connected') {
       setBannerAlert({
         message: 'Connect OpenRouter to start chatting.',
         type: 'error',
       });
-      setIsSettingsOpen(true);
+      handleConnectOpenRouter('chat', {
+        type: 'send_prompt',
+        prompt: promptToSend.trim(),
+        chatId: currentChatId,
+      });
       return;
     }
 
@@ -411,9 +815,10 @@ export default function App() {
     let accumulatedText = '';
 
     try {
-      const response = await fetch('/api/chat', {
+      const response = await fetch(getApiUrl('/api/chat'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
         body: JSON.stringify({
           prompt: promptToSend.trim(),
           chatId: activeChatId,
@@ -637,6 +1042,10 @@ export default function App() {
     }
   };
 
+  useEffect(() => {
+    handleSendMessageRef.current = handleSendMessage;
+  });
+
   const handleRegenerate = () => {
     const lastUserMessage = [...messages].reverse().find((m) => m.role === 'user');
     if (lastUserMessage) {
@@ -652,31 +1061,16 @@ export default function App() {
       <Sidebar
         isOpen={isSidebarOpen}
         onClose={() => setIsSidebarOpen(false)}
-        chats={chats}
-        activeChatId={activeChatId}
-        onSelectChat={loadChatMessages}
         onNewChat={handleNewChat}
-        onDeleteChat={handleDeleteChat}
-        onExportChat={handleExportSpecificChat}
+        onOpenHistory={() => {
+          setHistoryTab('conversations');
+          setIsHistoryOpen(true);
+        }}
         onOpenSettings={() => setIsSettingsOpen(true)}
         onOpenModels={() => setIsModelsOpen(true)}
         onOpenIntegrations={() => setIsIntegrationsOpen(true)}
         onOpenFriendMode={() => setIsFriendModeOpen(true)}
         onOpenTeacherMode={() => setIsTeacherModeOpen(true)}
-        onOpenRelationshipSupport={() =>
-          setFeatureNotice({
-            title: 'Relationship Support',
-            tagline: 'Empathetic guidance for communication & boundaries',
-            description:
-              'Navigate difficult interpersonal conversations, communication patterns, and thoughtful relationship reflections with a supportive AI facilitator.',
-            highlights: [
-              'Perspective-taking roleplay exercises',
-              'De-escalation & boundary phrasing suggestions',
-              'Private, confidential journaling space',
-            ],
-            status: 'In Development',
-          })
-        }
         onOpenProjects={() =>
           setFeatureNotice({
             title: 'Projects & Knowledge Hub',
@@ -693,6 +1087,7 @@ export default function App() {
         }
         onOpenScheduling={() => setIsSchedulingOpen(true)}
         onOpenPlugins={() => setIsIntegrationsOpen(true)}
+        onOpenAdmin={() => setIsAdminOpen(true)}
         onOpenAuth={() => setIsAuthOpen(true)}
         onLogout={handleLogout}
         onToggleDarkMode={() => setDarkMode(!darkMode)}
@@ -744,7 +1139,10 @@ export default function App() {
               onSelectConversation={loadChatMessages}
               onNewChat={(prompt = '') => { handleNewChat(); setInput(prompt); requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>('textarea')?.focus()); }}
               onOpenSetup={() => setIsIntegrationsOpen(true)}
-              onOpenHistory={() => setIsSidebarOpen(true)}
+              onOpenHistory={() => {
+                setHistoryTab('conversations');
+                setIsHistoryOpen(true);
+              }}
               onOpenFriendMode={() => setIsFriendModeOpen(true)}
               onOpenTeacherMode={() => setIsTeacherModeOpen(true)}
               onOpenScheduling={() => setIsSchedulingOpen(true)}
@@ -794,7 +1192,7 @@ export default function App() {
         isOpen={isSettingsOpen}
         onClose={() => setIsSettingsOpen(false)}
         providerStatus={providerStatus}
-        onConnectOpenRouter={handleConnectOpenRouter}
+        onConnectOpenRouter={() => handleConnectOpenRouter('settings')}
         onDisconnectOpenRouter={handleDisconnectOpenRouter}
         isConnecting={isConnectingOpenRouter}
         onOpenIntegrations={() => setIsIntegrationsOpen(true)}
@@ -830,6 +1228,29 @@ export default function App() {
           setInput(prompt);
           requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>('textarea')?.focus());
         }}
+      />
+
+      {/* History (Conversations & My Memories) Modal */}
+      <HistoryModal
+        isOpen={isHistoryOpen}
+        onClose={() => setIsHistoryOpen(false)}
+        chats={chats}
+        activeChatId={activeChatId}
+        onSelectChat={(id) => {
+          loadChatMessages(id);
+          setIsHistoryOpen(false);
+        }}
+        onDeleteChat={handleDeleteChat}
+        onExportChat={handleExportSpecificChat}
+        user={user}
+        defaultTab={historyTab}
+      />
+
+      {/* Founder Admin Panel Modal (Sathish) */}
+      <AdminPanelModal
+        isOpen={isAdminOpen}
+        onClose={() => setIsAdminOpen(false)}
+        user={user}
       />
 
       {/* Teacher Mode Modal */}

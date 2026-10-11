@@ -49,8 +49,8 @@ public class SpeechToTextEngine implements RecognitionListener {
 
     public void setLanguage(String languageCode) {
         if (languageCode == null || languageCode.trim().isEmpty() || "auto".equalsIgnoreCase(languageCode)) {
-            // Default to Indian English / Tamil context
-            this.selectedLanguage = "ta-IN";
+            // Default to Indian English for MVP active commands
+            this.selectedLanguage = "en-IN";
         } else {
             this.selectedLanguage = languageCode;
         }
@@ -64,28 +64,43 @@ public class SpeechToTextEngine implements RecognitionListener {
         return isListening;
     }
 
+    public static boolean isRecoverableError(int errorCode) {
+        return errorCode == SpeechRecognizer.ERROR_NO_MATCH
+                || errorCode == SpeechRecognizer.ERROR_SPEECH_TIMEOUT
+                || errorCode == SpeechRecognizer.ERROR_NETWORK_TIMEOUT
+                || errorCode == SpeechRecognizer.ERROR_NETWORK
+                || errorCode == SpeechRecognizer.ERROR_SERVER
+                || errorCode == SpeechRecognizer.ERROR_RECOGNIZER_BUSY;
+    }
+
     public synchronized void startListening(SpeechCallback callback) {
+        if (isListening) {
+            Log.d(TAG, "SpeechRecognizer is already listening, ignoring duplicate start request");
+            return;
+        }
+
         this.callback = callback;
+        isListening = true;
 
         mainHandler.post(() -> {
             try {
                 if (!SpeechRecognizer.isRecognitionAvailable(context)) {
                     Log.e(TAG, "SpeechRecognizer is not available on this device");
+                    isListening = false;
                     if (this.callback != null) {
                         this.callback.onError(-1, "Speech recognition is not available on this device");
                     }
                     return;
                 }
 
-                if (speechRecognizer != null) {
+                if (speechRecognizer == null) {
+                    speechRecognizer = SpeechRecognizer.createSpeechRecognizer(context);
+                    speechRecognizer.setRecognitionListener(this);
+                } else {
                     try {
-                        speechRecognizer.destroy();
+                        speechRecognizer.cancel();
                     } catch (Exception ignored) {}
-                    speechRecognizer = null;
                 }
-
-                speechRecognizer = SpeechRecognizer.createSpeechRecognizer(context);
-                speechRecognizer.setRecognitionListener(this);
 
                 Intent intent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
                 intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
@@ -98,12 +113,15 @@ public class SpeechToTextEngine implements RecognitionListener {
                 intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, selectedLanguage);
                 intent.putExtra(RecognizerIntent.EXTRA_ONLY_RETURN_LANGUAGE_PREFERENCE, false);
 
-                isListening = true;
                 speechRecognizer.startListening(intent);
                 Log.d(TAG, "Speech recognition started with language: " + selectedLanguage);
             } catch (Exception e) {
                 Log.e(TAG, "Failed to start speech recognition", e);
                 isListening = false;
+                if (speechRecognizer != null) {
+                    try { speechRecognizer.destroy(); } catch (Exception ignored) {}
+                    speechRecognizer = null;
+                }
                 if (this.callback != null) {
                     this.callback.onError(-2, "Failed to initialize microphone listener: " + e.getMessage());
                 }
@@ -117,7 +135,6 @@ public class SpeechToTextEngine implements RecognitionListener {
             if (speechRecognizer != null) {
                 try {
                     speechRecognizer.stopListening();
-                    speechRecognizer.cancel();
                 } catch (Exception e) {
                     Log.w(TAG, "Error while stopping speech recognizer", e);
                 }
@@ -125,8 +142,23 @@ public class SpeechToTextEngine implements RecognitionListener {
         });
     }
 
+    public synchronized void cancel() {
+        isListening = false;
+        this.callback = null;
+        mainHandler.post(() -> {
+            if (speechRecognizer != null) {
+                try {
+                    speechRecognizer.cancel();
+                } catch (Exception e) {
+                    Log.w(TAG, "Error while cancelling speech recognizer", e);
+                }
+            }
+        });
+    }
+
     public synchronized void destroy() {
         isListening = false;
+        callback = null;
         mainHandler.post(() -> {
             if (speechRecognizer != null) {
                 try {
@@ -134,9 +166,9 @@ public class SpeechToTextEngine implements RecognitionListener {
                 } catch (Exception ignored) {}
                 speechRecognizer = null;
             }
-            callback = null;
         });
     }
+
 
     // RecognitionListener Callbacks
     @Override
@@ -156,8 +188,15 @@ public class SpeechToTextEngine implements RecognitionListener {
         }
     }
 
+    private long lastRmsLogTime = 0;
+
     @Override
     public void onRmsChanged(float rmsdB) {
+        long now = System.currentTimeMillis();
+        if (now - lastRmsLogTime > 1000) {
+            lastRmsLogTime = now;
+            Log.d(TAG, "SpeechRecognizer microphone audio RMS level: " + rmsdB + " dB");
+        }
         if (callback != null) {
             callback.onRmsChanged(rmsdB);
         }
@@ -193,6 +232,7 @@ public class SpeechToTextEngine implements RecognitionListener {
         isListening = false;
         consecutiveErrorCount = 0;
         ArrayList<String> matches = results.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION);
+        Log.d(TAG, "SpeechRecognizer onResults candidates: " + matches);
         if (matches != null && !matches.isEmpty()) {
             String bestText = matches.get(0);
             Log.d(TAG, "SpeechRecognizer final result: " + bestText);
@@ -200,6 +240,7 @@ public class SpeechToTextEngine implements RecognitionListener {
                 callback.onResult(bestText, true);
             }
         } else {
+            Log.d(TAG, "SpeechRecognizer onResults returned null or empty match list");
             if (callback != null) {
                 callback.onError(SpeechRecognizer.ERROR_NO_MATCH, "No speech recognized");
             }
@@ -210,10 +251,13 @@ public class SpeechToTextEngine implements RecognitionListener {
     public void onPartialResults(Bundle partialResults) {
         ArrayList<String> matches = partialResults.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION);
         if (matches != null && !matches.isEmpty()) {
+            Log.d(TAG, "SpeechRecognizer onPartialResults candidates: " + matches);
             String partial = matches.get(0);
             if (callback != null) {
                 callback.onResult(partial, false);
             }
+        } else {
+            Log.d(TAG, "SpeechRecognizer onPartialResults: no candidates");
         }
     }
 

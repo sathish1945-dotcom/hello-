@@ -27,6 +27,58 @@ function generateCodeChallenge(verifier: string): string {
   return base64UrlEncode(hash);
 }
 
+import {
+  ALLOWED_RETURN_SCREENS,
+  validateReturnScreen,
+  type ReturnScreen,
+  type PendingAction,
+} from '../types/index.ts';
+
+export {
+  ALLOWED_RETURN_SCREENS,
+  validateReturnScreen,
+  type ReturnScreen,
+  type PendingAction,
+};
+
+export function sanitizePendingAction(rawAction: unknown): PendingAction | undefined {
+  if (!rawAction) return undefined;
+  let parsed = rawAction;
+  if (typeof rawAction === 'string') {
+    try {
+      parsed = JSON.parse(rawAction);
+    } catch {
+      return undefined;
+    }
+  }
+  if (!parsed || typeof parsed !== 'object') return undefined;
+  const action = parsed as Record<string, any>;
+  const type = String(action.type || '').trim();
+
+  if (type === 'send_prompt' && typeof action.prompt === 'string') {
+    const cleanPrompt = action.prompt.trim().slice(0, 4000);
+    if (!cleanPrompt) return undefined;
+    return {
+      type: 'send_prompt',
+      prompt: cleanPrompt,
+      chatId: typeof action.chatId === 'string' && action.chatId.trim() ? action.chatId.trim().slice(0, 100) : null,
+    };
+  }
+
+  if (type === 'open_modal') {
+    return {
+      type: 'open_modal',
+      screen: validateReturnScreen(action.screen),
+    };
+  }
+
+  if (type === 'resume_friend_mode') {
+    return { type: 'resume_friend_mode' };
+  }
+
+  return undefined;
+}
+
 export function getAppUrl(req: Request): string {
   if (process.env.APP_URL) {
     return process.env.APP_URL.replace(/\/+$/, '');
@@ -43,7 +95,7 @@ export function getAppUrl(req: Request): string {
  * - code_challenge
  * - code_challenge_method=S256
  * Note: OpenRouter PKCE does NOT require client_id or client_secret.
- * GET /api/openrouter/connect
+ * GET/POST /api/openrouter/connect
  */
 export async function handleOpenRouterConnect(req: Request, res: Response) {
   try {
@@ -52,16 +104,27 @@ export async function handleOpenRouterConnect(req: Request, res: Response) {
       return res.status(401).json({ error: 'Authentication required' });
     }
 
+    const rawReturnScreen = req.query.return_screen || req.body?.returnScreen || req.query.returnScreen;
+    const returnScreen = validateReturnScreen(rawReturnScreen);
+
+    const rawPendingAction = req.body?.pendingAction || req.query.pending_action || req.query.pendingAction;
+    const pendingAction = sanitizePendingAction(rawPendingAction);
+
     const state = base64UrlEncode(crypto.randomBytes(24));
     const codeVerifier = generateCodeVerifier();
     const codeChallenge = generateCodeChallenge(codeVerifier);
 
-    // Persist state + code_verifier securely on the backend linked to the user
-    await db.saveOAuthState(state, codeVerifier, user.id);
+    // Persist state + code_verifier + returnScreen + pendingAction securely on backend
+    await db.saveOAuthState(
+      state,
+      codeVerifier,
+      user.id,
+      returnScreen,
+      pendingAction ? JSON.stringify(pendingAction) : undefined
+    );
 
     const appUrl = getAppUrl(req);
-    // Include state in the callback URL query string so that even if OpenRouter's /auth
-    // drops top-level state parameter during login/registration redirect, state is preserved.
+    // Include state in callback URL query string so state is preserved across redirects
     const callbackUrl = `${appUrl}/api/openrouter/callback?state=${encodeURIComponent(state)}`;
 
     const params = new URLSearchParams({
@@ -76,6 +139,9 @@ export async function handleOpenRouterConnect(req: Request, res: Response) {
     return res.json({
       url: authUrl,
       callbackUrl,
+      state,
+      returnScreen,
+      pendingAction: pendingAction || null,
     });
   } catch (err: any) {
     console.error('[OpenRouter OAuth] Failed to generate connect URL:', err);
@@ -90,6 +156,7 @@ export async function handleOpenRouterConnect(req: Request, res: Response) {
  * Receive user's OpenRouter API key.
  * Encrypt the key server-side using AES-256-GCM.
  * Store the encrypted key in the database linked only to that user.
+ * Verify provider connection through backend before rendering success.
  * GET /api/openrouter/callback
  */
 export async function handleOpenRouterCallback(req: Request, res: Response) {
@@ -99,11 +166,26 @@ export async function handleOpenRouterCallback(req: Request, res: Response) {
   const stateStr = Array.isArray(rawState) ? String(rawState[0]) : typeof rawState === 'string' ? rawState : '';
   const codeStr = Array.isArray(code) ? String(code[0]) : typeof code === 'string' ? code : '';
 
-  const renderResponse = (success: boolean, message: string) => {
+  const renderResponse = (success: boolean, message: string, returnScreen: ReturnScreen = 'chat', pendingAction?: PendingAction) => {
     const origin = new URL(getAppUrl(req)).origin;
     const safeMessage = message.replace(/[&<>"']/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]!);
-    const payload = JSON.stringify({ type: success ? 'OAUTH_AUTH_SUCCESS' : 'OAUTH_AUTH_ERROR', provider: 'openrouter', error: success ? null : message }).replace(/</g, '\\u003c');
-    const redirectTarget = `${origin}/?integration_connected=openrouter${success ? '' : '&integration_error=' + encodeURIComponent(safeMessage)}`;
+    const payload = JSON.stringify({
+      type: success ? 'OAUTH_AUTH_SUCCESS' : 'OAUTH_AUTH_ERROR',
+      provider: 'openrouter',
+      returnScreen,
+      state: stateStr || undefined,
+      pendingAction: success ? pendingAction : undefined,
+      error: success ? null : message,
+    }).replace(/</g, '\\u003c');
+
+    const returnParam = `return_screen=${encodeURIComponent(returnScreen)}`;
+    const statusParam = `status=${success ? 'success' : 'error'}`;
+    const stateParam = stateStr ? `&state=${encodeURIComponent(stateStr)}` : '';
+    const errorParam = !success ? `&error=${encodeURIComponent(safeMessage)}` : '';
+    const androidIntentUrl = `intent://oauth-callback?provider=openrouter&${statusParam}&${returnParam}${stateParam}${errorParam}#Intent;scheme=hello;package=com.hello.ai;end`;
+    const androidSchemeUrl = `hello://oauth-callback?provider=openrouter&${statusParam}&${returnParam}${stateParam}${errorParam}`;
+    const webRedirect = `${origin}/?integration_connected=openrouter&${returnParam}${success ? '' : '&integration_error=' + encodeURIComponent(safeMessage)}`;
+
     return res.send(`
       <!DOCTYPE html>
       <html>
@@ -125,7 +207,7 @@ export async function handleOpenRouterCallback(req: Request, res: Response) {
               box-sizing: border-box;
             }
             .card {
-              max-width: 420px;
+              max-width: 440px;
               width: 100%;
               text-align: center;
               padding: 32px 24px;
@@ -134,47 +216,57 @@ export async function handleOpenRouterCallback(req: Request, res: Response) {
               border-radius: 16px;
               box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5);
             }
-            h2 { margin-top: 0; font-size: 1.25rem; font-weight: 600; }
-            p { font-size: 0.9rem; color: #a1a1aa; line-height: 1.5; }
+            .icon { font-size: 2.5rem; margin-bottom: 12px; }
+            h2 { margin-top: 0; font-size: 1.35rem; font-weight: 600; }
+            p { font-size: 0.95rem; color: #a1a1aa; line-height: 1.5; }
             .btn {
-              margin-top: 16px;
+              margin-top: 12px;
               display: inline-block;
               background: #2563eb;
               color: #fff;
-              padding: 10px 20px;
-              border-radius: 8px;
+              padding: 12px 24px;
+              border-radius: 10px;
               text-decoration: none;
-              font-size: 0.875rem;
-              font-weight: 500;
+              font-size: 0.95rem;
+              font-weight: 600;
               cursor: pointer;
               border: none;
               transition: background 0.15s ease;
             }
             .btn:hover { background: #1d4ed8; }
+            .btn-secondary {
+              background: #27272a;
+              color: #e4e4e7;
+            }
+            .btn-secondary:hover { background: #3f3f46; }
           </style>
         </head>
         <body>
           <div class="card">
-            <h2>${success ? 'Connected Successfully' : 'Connection Incomplete'}</h2>
+            <div class="icon">${success ? '👋' : '⚠️'}</div>
+            <h2>${success ? 'OpenRouter Connected!' : 'Connection Incomplete'}</h2>
             <p>${safeMessage}</p>
+            <p style="font-size: 0.85rem; color: #71717a;">Returning to ${returnScreen}...</p>
+            <div style="margin-top: 20px; display: flex; flex-direction: column; gap: 10px; align-items: center;">
+              <a class="btn" href="${androidIntentUrl}">Return to Hello App</a>
+              <a class="btn btn-secondary" href="${androidSchemeUrl}">Open Hello Directly</a>
+              <button class="btn btn-secondary" onclick="window.close()" style="font-size: 0.85rem; padding: 8px 16px;">Close Browser</button>
+            </div>
             <script>
               try {
                 if (window.opener && window.opener !== window) {
                   window.opener.postMessage(${payload}, ${JSON.stringify(origin)});
                   setTimeout(() => window.close(), 1200);
                 } else {
+                  // Attempt automatic handoff back to native app or web
                   setTimeout(() => {
-                    window.location.replace(${JSON.stringify(redirectTarget)});
-                  }, 800);
+                    window.location.href = ${JSON.stringify(androidIntentUrl)};
+                  }, 600);
                 }
               } catch (e) {
-                window.location.replace(${JSON.stringify(redirectTarget)});
+                // Keep manual buttons visible
               }
             </script>
-            <div style="margin-top: 20px; display: flex; gap: 8px; justify-content: center; flex-wrap: wrap;">
-              <button class="btn" onclick="window.close()">Close Window</button>
-              <a class="btn" href="${redirectTarget}">Return to hello</a>
-            </div>
           </div>
         </body>
       </html>
@@ -183,17 +275,32 @@ export async function handleOpenRouterCallback(req: Request, res: Response) {
 
   if (error || error_description) {
     console.warn('[OpenRouter OAuth] Error from callback:', error, error_description);
-    return renderResponse(false, 'Authorization was cancelled or rejected by the provider.');
+    let errorReturnScreen: ReturnScreen = 'chat';
+    if (stateStr) {
+      const s = await db.consumeOAuthState(stateStr);
+      if (s?.return_screen) {
+        errorReturnScreen = validateReturnScreen(s.return_screen);
+      }
+    }
+    return renderResponse(false, 'Authorization was cancelled or rejected by the provider.', errorReturnScreen);
   }
 
   if (!codeStr || !stateStr) {
-    return renderResponse(false, 'Missing required authorization code or state parameters.');
+    return renderResponse(false, 'Missing required authorization code or state parameters.', 'chat');
   }
 
-  // Verify and consume state
+  // Verify and consume state (atomic single-use check)
   const oauthState = await db.consumeOAuthState(stateStr);
   if (!oauthState) {
-    return renderResponse(false, 'Authorization session expired or was invalid. Please try connecting again.');
+    return renderResponse(false, 'Authorization session expired or was already used. Please try connecting again.', 'chat');
+  }
+
+  const returnScreen = validateReturnScreen(oauthState.return_screen);
+  let pendingAction: PendingAction | undefined;
+  if (oauthState.pending_action) {
+    try {
+      pendingAction = JSON.parse(oauthState.pending_action);
+    } catch {}
   }
 
   try {
@@ -217,21 +324,27 @@ export async function handleOpenRouterCallback(req: Request, res: Response) {
     if (!exchangeRes.ok) {
       const errText = await exchangeRes.text();
       console.error('[OpenRouter OAuth] Key exchange failed with status', exchangeRes.status, errText);
-      return renderResponse(false, 'Failed to exchange authorization code with OpenRouter. Please try again.');
+      return renderResponse(false, 'Failed to exchange authorization code with OpenRouter. Please try again.', returnScreen);
     }
 
     const data = (await exchangeRes.json()) as { key?: string };
     if (!data.key || typeof data.key !== 'string') {
-      return renderResponse(false, 'OpenRouter did not return a valid key.');
+      return renderResponse(false, 'OpenRouter did not return a valid key.', returnScreen);
     }
 
-    // Encrypt the received key server-side using AES-256-GCM
+    // Encrypt received key server-side using AES-256-GCM
     const encryptedKey = encryptCredential(data.key);
 
-    // Store the encrypted key in the database linked only to that user
+    // Store encrypted key in database linked strictly to the authenticated user
     await db.saveProviderConnection(oauthState.user_id, 'openrouter', encryptedKey, 'connected');
 
-    // Restore and refresh the user's session cookie so session is 100% active on mobile
+    // Verify provider connection through backend before reporting success
+    const verifiedConn = await db.getProviderConnection(oauthState.user_id, 'openrouter');
+    if (!verifiedConn || verifiedConn.connection_status !== 'connected') {
+      return renderResponse(false, 'Failed to verify provider connection after key exchange.', returnScreen);
+    }
+
+    // Restore and refresh user session cookie
     const user = await db.findUserById(oauthState.user_id);
     if (user) {
       setSessionCookie(res, generateToken(user));
@@ -239,11 +352,13 @@ export async function handleOpenRouterCallback(req: Request, res: Response) {
 
     return renderResponse(
       true,
-      'Your OpenRouter account has been connected securely. Returning to hello...'
+      'Your OpenRouter account has been connected securely. Returning to hello...',
+      returnScreen,
+      pendingAction
     );
   } catch (err: any) {
     console.error('[OpenRouter OAuth] Error during key exchange or encryption:', err);
-    return renderResponse(false, 'An unexpected error occurred during connection. Please retry.');
+    return renderResponse(false, 'An unexpected error occurred during connection. Please retry.', returnScreen);
   }
 }
 
@@ -283,3 +398,33 @@ export async function handleOpenRouterDisconnect(req: Request, res: Response) {
     message: 'OpenRouter account disconnected.',
   });
 }
+
+/**
+ * Saves OpenRouter API key directly for current user
+ * POST /api/openrouter/key
+ */
+export async function handleOpenRouterSaveKey(req: Request, res: Response) {
+  const user = (req as any).user;
+  if (!user) {
+    return res.status(401).json({ error: 'Authentication required' });
+  }
+
+  const { apiKey } = req.body || {};
+  if (!apiKey || typeof apiKey !== 'string' || !apiKey.trim().startsWith('sk-or-')) {
+    return res.status(400).json({ error: 'Invalid OpenRouter API key. It should start with sk-or-' });
+  }
+
+  try {
+    const encryptedKey = encryptCredential(apiKey.trim());
+    await db.saveProviderConnection(user.id, 'openrouter', encryptedKey, 'connected');
+    return res.json({
+      success: true,
+      connected: true,
+      message: 'OpenRouter API key saved securely.',
+    });
+  } catch (err: any) {
+    console.error('[OpenRouter] Failed to encrypt and save manual API key:', err);
+    return res.status(500).json({ error: 'Failed to securely store OpenRouter key' });
+  }
+}
+

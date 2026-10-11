@@ -38,19 +38,11 @@ public class FriendModePlugin extends Plugin {
     public void load() {
         super.load();
         Log.d(TAG, "FriendModePlugin loaded");
-        connectToServiceIfRunning();
+        registerServiceCallback();
     }
 
-    private void connectToServiceIfRunning() {
-        FriendModeService svc = FriendModeService.getInstance();
-        if (svc != null) {
-            boundService = svc;
-            attachServiceCallbacks(svc);
-        }
-    }
-
-    private void attachServiceCallbacks(FriendModeService svc) {
-        svc.setServiceCallback(new FriendModeService.ServiceCallback() {
+    private void registerServiceCallback() {
+        FriendModeService.ServiceCallback callback = new FriendModeService.ServiceCallback() {
             @Override
             public void onStateChanged(FriendModeState state) {
                 JSObject data = new JSObject();
@@ -75,6 +67,7 @@ public class FriendModePlugin extends Plugin {
 
             @Override
             public void onSpeechCompleted(String text) {
+                Log.d(TAG, "Plugin onSpeechCompleted: " + text + ", dispatching to listeners");
                 JSObject data = new JSObject();
                 data.put("text", text);
                 notifyListeners("speechCompleted", data);
@@ -88,12 +81,28 @@ public class FriendModePlugin extends Plugin {
             }
 
             @Override
+            public void onTurnCountdownTick(int secondsRemaining) {
+                JSObject data = new JSObject();
+                data.put("secondsRemaining", secondsRemaining);
+                notifyListeners("turnCountdownTick", data);
+            }
+
+            @Override
+            public void onSpeechInterrupted() {
+                JSObject data = new JSObject();
+                data.put("interrupted", true);
+                notifyListeners("speechInterrupted", data);
+            }
+
+            @Override
             public void onError(String error) {
                 JSObject data = new JSObject();
                 data.put("error", error);
                 notifyListeners("error", data);
             }
-        });
+        };
+
+        FriendModeService.setPluginCallback(callback);
     }
 
     @PluginMethod
@@ -113,8 +122,11 @@ public class FriendModePlugin extends Plugin {
     @PluginMethod
     public void enableFriendMode(PluginCall call) {
         Context ctx = getContext();
-        String lang = call.getString("language", "ta-IN");
+        String lang = call.getString("language", "en-IN");
         boolean floatingEmoji = call.getBoolean("floatingEmoji", true);
+
+        // Ensure static callback is registered
+        registerServiceCallback();
 
         // Check overlay permission
         if (floatingEmoji && !FloatingEmojiOverlay.canDrawOverlays(ctx)) {
@@ -135,9 +147,7 @@ public class FriendModePlugin extends Plugin {
             // Connect callback
             FriendModeService svc = FriendModeService.getInstance();
             if (svc != null) {
-                boundService = svc;
                 svc.setFloatingEmojiEnabled(floatingEmoji);
-                attachServiceCallbacks(svc);
             }
 
             JSObject ret = new JSObject();
@@ -174,6 +184,52 @@ public class FriendModePlugin extends Plugin {
     }
 
     @PluginMethod
+    public void pauseFriendMode(PluginCall call) {
+        Context ctx = getContext();
+        try {
+            Intent intent = new Intent(ctx, FriendModeService.class);
+            intent.setAction(FriendModeService.ACTION_PAUSE);
+            ctx.startService(intent);
+
+            FriendModeService svc = FriendModeService.getInstance();
+            if (svc != null) {
+                svc.pauseFriendMode();
+            }
+
+            JSObject ret = new JSObject();
+            ret.put("success", true);
+            ret.put("state", FriendModeState.IDLE.name());
+            call.resolve(ret);
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to pause FriendModeService", e);
+            call.reject("Failed to pause Friend Mode: " + e.getMessage());
+        }
+    }
+
+    @PluginMethod
+    public void resumeFriendMode(PluginCall call) {
+        Context ctx = getContext();
+        try {
+            Intent intent = new Intent(ctx, FriendModeService.class);
+            intent.setAction(FriendModeService.ACTION_RESUME);
+            ctx.startService(intent);
+
+            FriendModeService svc = FriendModeService.getInstance();
+            if (svc != null) {
+                svc.resumeFriendMode();
+            }
+
+            JSObject ret = new JSObject();
+            ret.put("success", true);
+            ret.put("state", FriendModeState.LISTENING_FOR_WAKE.name());
+            call.resolve(ret);
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to resume FriendModeService", e);
+            call.reject("Failed to resume Friend Mode: " + e.getMessage());
+        }
+    }
+
+    @PluginMethod
     public void triggerWake(PluginCall call) {
         FriendModeService svc = FriendModeService.getInstance();
         if (svc != null && svc.getCurrentState() != FriendModeState.DISABLED) {
@@ -183,6 +239,32 @@ public class FriendModePlugin extends Plugin {
             call.resolve(ret);
         } else {
             call.reject("Friend Mode is not currently active");
+        }
+    }
+
+    @PluginMethod
+    public void answerNow(PluginCall call) {
+        FriendModeService svc = FriendModeService.getInstance();
+        if (svc != null) {
+            svc.answerNow();
+            JSObject ret = new JSObject();
+            ret.put("success", true);
+            call.resolve(ret);
+        } else {
+            call.reject("Friend Mode service is not running");
+        }
+    }
+
+    @PluginMethod
+    public void stopPlayback(PluginCall call) {
+        FriendModeService svc = FriendModeService.getInstance();
+        if (svc != null) {
+            svc.stopAnswerPlaybackAndCancel();
+            JSObject ret = new JSObject();
+            ret.put("success", true);
+            call.resolve(ret);
+        } else {
+            call.reject("Friend Mode service is not running");
         }
     }
 
@@ -215,7 +297,7 @@ public class FriendModePlugin extends Plugin {
 
     @PluginMethod
     public void setLanguage(PluginCall call) {
-        String lang = call.getString("language", "ta-IN");
+        String lang = call.getString("language", "en-IN");
         FriendModeService svc = FriendModeService.getInstance();
         if (svc != null) {
             svc.setLanguage(lang);

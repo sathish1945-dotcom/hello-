@@ -30,6 +30,8 @@ public class FloatingEmojiOverlay {
         void onOverlayTapped();
         void onOverlayLongPressed();
         void onOverlayCloseRequested();
+        void onAnswerNowRequested();
+        void onStopRequested();
     }
 
     private final Context context;
@@ -40,6 +42,7 @@ public class FloatingEmojiOverlay {
     private WindowManager.LayoutParams layoutParams;
     private OverlayInteractionListener listener;
     private boolean isShowing = false;
+    private boolean isPendingShow = false;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
 
     private float initialTouchX;
@@ -47,6 +50,7 @@ public class FloatingEmojiOverlay {
     private int initialX;
     private int initialY;
     private boolean isDragging = false;
+    private FriendModeState currentState = FriendModeState.DISABLED;
     private static final int CLICK_DRAG_TOLERANCE = 15;
 
     public FloatingEmojiOverlay(Context context, OverlayInteractionListener listener) {
@@ -63,17 +67,29 @@ public class FloatingEmojiOverlay {
     }
 
     public synchronized void show() {
-        if (isShowing) return;
+        if (isShowing || isPendingShow) {
+            Log.d(TAG, "Overlay is already showing or pending, ignoring duplicate show()");
+            return;
+        }
 
         if (!canDrawOverlays(context)) {
             Log.w(TAG, "Cannot show overlay: SYSTEM_ALERT_WINDOW permission not granted");
             return;
         }
 
+        isPendingShow = true;
+
         mainHandler.post(() -> {
             try {
                 if (overlayView == null) {
                     createOverlayView();
+                }
+
+                if (overlayView.getParent() != null || (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT && overlayView.isAttachedToWindow())) {
+                    Log.d(TAG, "Overlay view is already attached to WindowManager");
+                    isShowing = true;
+                    isPendingShow = false;
+                    return;
                 }
 
                 int layoutType;
@@ -103,9 +119,12 @@ public class FloatingEmojiOverlay {
             } catch (Exception e) {
                 Log.e(TAG, "Failed to display floating emoji overlay", e);
                 isShowing = false;
+            } finally {
+                isPendingShow = false;
             }
         });
     }
+
 
     private void createOverlayView() {
         FrameLayout container = new FrameLayout(context);
@@ -201,9 +220,15 @@ public class FloatingEmojiOverlay {
                         long touchDuration = System.currentTimeMillis() - touchStartTime;
 
                         if (!isDragging && !longPressTriggered && touchDuration < 400) {
-                            Log.d(TAG, "Overlay tapped");
+                            Log.d(TAG, "Overlay tapped in state: " + currentState);
                             if (listener != null) {
-                                listener.onOverlayTapped();
+                                if (currentState == FriendModeState.ACTIVE_LISTENING || currentState == FriendModeState.WAITING_FOR_FINISH) {
+                                    listener.onAnswerNowRequested();
+                                } else if (currentState == FriendModeState.SPEAKING) {
+                                    listener.onStopRequested();
+                                } else {
+                                    listener.onOverlayTapped();
+                                }
                             }
                         }
                         return true;
@@ -220,6 +245,7 @@ public class FloatingEmojiOverlay {
     }
 
     public synchronized void updateState(FriendModeState state) {
+        this.currentState = state;
         mainHandler.post(() -> {
             if (statusIndicatorView == null) return;
 
@@ -229,31 +255,60 @@ public class FloatingEmojiOverlay {
             switch (state) {
                 case ACTIVE_LISTENING:
                     dot.setColor(Color.parseColor("#EF4444")); // Red when actively recording
-                    if (emojiTextView != null) emojiTextView.setText("👂");
+                    if (emojiTextView != null) {
+                        emojiTextView.setText("👂");
+                        emojiTextView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 26);
+                    }
+                    break;
+                case WAITING_FOR_FINISH:
+                    dot.setColor(Color.parseColor("#F97316")); // Warm orange when waiting for silence
+                    if (emojiTextView != null) {
+                        emojiTextView.setText("⏳");
+                        emojiTextView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 24);
+                    }
                     break;
                 case LISTENING_FOR_WAKE:
                     dot.setColor(Color.parseColor("#3B82F6")); // Blue when listening for wake phrase
-                    if (emojiTextView != null) emojiTextView.setText("👋");
+                    if (emojiTextView != null) {
+                        emojiTextView.setText("👋");
+                        emojiTextView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 26);
+                    }
                     break;
                 case THINKING:
                     dot.setColor(Color.parseColor("#F59E0B")); // Amber when thinking
-                    if (emojiTextView != null) emojiTextView.setText("🤔");
+                    if (emojiTextView != null) {
+                        emojiTextView.setText("🤔");
+                        emojiTextView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 26);
+                    }
                     break;
                 case SPEAKING:
                     dot.setColor(Color.parseColor("#8B5CF6")); // Purple when speaking
-                    if (emojiTextView != null) emojiTextView.setText("🗣️");
+                    if (emojiTextView != null) {
+                        emojiTextView.setText("🗣️");
+                        emojiTextView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 26);
+                    }
                     break;
                 case ERROR:
                     dot.setColor(Color.parseColor("#991B1B"));
-                    if (emojiTextView != null) emojiTextView.setText("⚠️");
+                    if (emojiTextView != null) {
+                        emojiTextView.setText("⚠️");
+                        emojiTextView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 26);
+                    }
                     break;
                 default:
                     dot.setColor(Color.parseColor("#10B981")); // Emerald
-                    if (emojiTextView != null) emojiTextView.setText("👋");
+                    if (emojiTextView != null) {
+                        emojiTextView.setText("👋");
+                        emojiTextView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 26);
+                    }
                     break;
             }
             statusIndicatorView.setBackground(dot);
         });
+    }
+
+    public synchronized void updateCountdown(int secondsRemaining) {
+        // 10s countdown removed: emoji remains dedicated status indicator
     }
 
     public synchronized void hide() {

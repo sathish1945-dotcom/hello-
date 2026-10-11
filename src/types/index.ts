@@ -7,6 +7,7 @@ export interface User {
   email: string;
   name: string;
   auth_provider: 'email' | 'google';
+  role?: 'user' | 'admin' | string;
   created_at: string;
 }
 
@@ -105,3 +106,40 @@ export interface RouteResolution {
   fallbackModels: string[];
   displayName: string;
 }
+
+export const ALLOWED_RETURN_SCREENS = [
+  'chat',
+  'settings',
+  'friend-mode',
+  'teacher-mode',
+  'models',
+  'integrations',
+  'scheduling',
+] as const;
+
+export type ReturnScreen = typeof ALLOWED_RETURN_SCREENS[number];
+
+export function validateReturnScreen(rawScreen: unknown): ReturnScreen {
+  if (typeof rawScreen === 'string' && (ALLOWED_RETURN_SCREENS as readonly string[]).includes(rawScreen.trim())) {
+    return rawScreen.trim() as ReturnScreen;
+  }
+  return 'chat';
+}
+
+export interface PendingAction {
+  type: 'send_prompt' | 'open_modal' | 'resume_friend_mode' | 'none';
+  prompt?: string;
+  chatId?: string | null;
+  screen?: ReturnScreen;
+}
+
+export interface FriendMemory {
+  id: string;
+  user_id: string;
+  memory_key: string;
+  memory_value: string;
+  created_at: string;
+  updated_at: string;
+}
+
+

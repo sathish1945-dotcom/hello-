@@ -10,6 +10,8 @@ import android.util.Log;
 
 import java.util.Locale;
 import java.util.UUID;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * TextToSpeechEngine: Encapsulates Android native TextToSpeech.
@@ -33,6 +35,7 @@ public class TextToSpeechEngine implements TextToSpeech.OnInitListener {
     private TTSCallback callback;
     private String currentLanguage = "auto";
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
+    private final Map<String, Runnable> utteranceCallbacks = new ConcurrentHashMap<>();
 
     public TextToSpeechEngine(Context context) {
         this.context = context.getApplicationContext();
@@ -122,6 +125,10 @@ public class TextToSpeechEngine implements TextToSpeech.OnInitListener {
             public void onDone(String utteranceId) {
                 isSpeaking = false;
                 Log.d(TAG, "TTS completed utterance: " + utteranceId);
+                Runnable onDone = utteranceCallbacks.remove(utteranceId);
+                if (onDone != null) {
+                    mainHandler.post(onDone);
+                }
                 if (callback != null) {
                     mainHandler.post(() -> callback.onSpeechDone(utteranceId));
                 }
@@ -131,6 +138,10 @@ public class TextToSpeechEngine implements TextToSpeech.OnInitListener {
             public void onError(String utteranceId) {
                 isSpeaking = false;
                 Log.e(TAG, "TTS error on utterance: " + utteranceId);
+                Runnable onDone = utteranceCallbacks.remove(utteranceId);
+                if (onDone != null) {
+                    mainHandler.post(onDone);
+                }
                 if (callback != null) {
                     mainHandler.post(() -> callback.onSpeechError(utteranceId, "Playback error"));
                 }
@@ -140,12 +151,17 @@ public class TextToSpeechEngine implements TextToSpeech.OnInitListener {
             public void onError(String utteranceId, int errorCode) {
                 isSpeaking = false;
                 Log.e(TAG, "TTS error code " + errorCode + " on utterance: " + utteranceId);
+                Runnable onDone = utteranceCallbacks.remove(utteranceId);
+                if (onDone != null) {
+                    mainHandler.post(onDone);
+                }
                 if (callback != null) {
                     mainHandler.post(() -> callback.onSpeechError(utteranceId, "Playback error: " + errorCode));
                 }
             }
         });
     }
+
 
     public synchronized void speak(String text, Runnable onDone) {
         if (text == null || text.trim().isEmpty()) {
@@ -181,6 +197,9 @@ public class TextToSpeechEngine implements TextToSpeech.OnInitListener {
             }
 
             String utteranceId = "friend_msg_" + UUID.randomUUID().toString();
+            if (onDone != null) {
+                utteranceCallbacks.put(utteranceId, onDone);
+            }
             Bundle params = new Bundle();
             params.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, utteranceId);
 
@@ -188,12 +207,14 @@ public class TextToSpeechEngine implements TextToSpeech.OnInitListener {
             if (result == TextToSpeech.ERROR) {
                 Log.e(TAG, "Failed to queue TTS utterance");
                 isSpeaking = false;
+                utteranceCallbacks.remove(utteranceId);
                 if (onDone != null) onDone.run();
             }
         });
     }
 
     public synchronized void stop() {
+        utteranceCallbacks.clear();
         if (tts != null) {
             try {
                 tts.stop();
@@ -203,6 +224,7 @@ public class TextToSpeechEngine implements TextToSpeech.OnInitListener {
         }
         isSpeaking = false;
     }
+
 
     public boolean isSpeaking() {
         return isSpeaking;

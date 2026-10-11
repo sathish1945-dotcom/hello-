@@ -73,18 +73,18 @@ Teaching Instructions:
         {/* Header */}
         <div className="p-4 sm:p-5 flex items-center justify-between border-b border-zinc-200/80 dark:border-zinc-800/80">
           <div className="flex items-center gap-2.5">
-            <div className="w-9 h-9 rounded-xl bg-blue-500/10 text-blue-500 flex items-center justify-center">
+            <div className="w-9 h-9 rounded-xl bg-amber-500/10 text-amber-500 flex items-center justify-center">
               <GraduationCap className="w-5 h-5" />
             </div>
             <div>
               <h2 className="font-bold text-lg text-zinc-900 dark:text-zinc-100 flex items-center gap-2">
                 Teacher Mode
-                <span className="text-[11px] font-medium px-2 py-0.5 rounded-full bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-500/20">
-                  Interactive Tutor
+                <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20">
+                  In development
                 </span>
               </h2>
               <p className="text-xs text-zinc-500 dark:text-zinc-400">
-                Master any subject with structured curriculums and interactive quizzes
+                AI interactive tutor and learning modules
               </p>
             </div>
           </div>
@@ -99,6 +99,16 @@ Teaching Instructions:
 
         {/* Scrollable Content */}
         <div className="flex-1 overflow-y-auto p-4 sm:p-5 space-y-4 text-xs">
+          {/* Prominent In-Development Notice Banner */}
+          <div className="p-3.5 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-900 dark:text-amber-200 space-y-1">
+            <div className="flex items-center gap-2 font-semibold text-xs text-amber-700 dark:text-amber-400">
+              <Sparkles className="w-4 h-4" />
+              <span>Feature In Active Development</span>
+            </div>
+            <p className="text-[11px] text-zinc-600 dark:text-zinc-400">
+              Adaptive pacing, multi-module learning curriculums, and interactive quiz grading are currently being built for the next major release. This feature is not yet ready for production courses.
+            </p>
+          </div>
           {/* Topic Input */}
           <div className="space-y-1.5">
             <label htmlFor="topic-input" className="font-semibold text-zinc-900 dark:text-zinc-100 block">
@@ -226,15 +236,14 @@ Teaching Instructions:
         {/* Footer */}
         <div className="p-4 sm:p-5 border-t border-zinc-200/80 dark:border-zinc-800/80 flex items-center justify-between gap-3 bg-zinc-50/50 dark:bg-zinc-950/50">
           <span className="text-[11px] text-zinc-500 dark:text-zinc-400">
-            hello adapts explanations as you ask questions
+            Teacher Mode learning engine is currently in development
           </span>
           <button
             type="button"
-            onClick={() => handleStart()}
-            className="px-5 py-2 text-xs font-semibold rounded-xl bg-blue-600 hover:bg-blue-700 text-white shadow-md hover:shadow-blue-500/20 transition-all flex items-center gap-2 active:scale-95"
+            disabled={true}
+            className="px-5 py-2 text-xs font-semibold rounded-xl bg-zinc-200 dark:bg-zinc-800 text-zinc-500 dark:text-zinc-400 cursor-not-allowed flex items-center gap-2"
           >
-            <span>Begin Lesson</span>
-            <ArrowRight className="w-4 h-4" />
+            <span>In development</span>
           </button>
         </div>
       </div>

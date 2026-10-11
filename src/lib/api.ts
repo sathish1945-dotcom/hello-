@@ -111,6 +111,57 @@ export async function parseApiError(
   }
 }
 
+import { Capacitor } from '@capacitor/core';
+
+export const PRODUCTION_API_URL = 'https://model-mesh-taupe.vercel.app';
+
+export function getStoredAuthToken(): string | null {
+  if (typeof window === 'undefined' || typeof localStorage === 'undefined') return null;
+  return localStorage.getItem('hello_auth_token');
+}
+
+export function setStoredAuthToken(token: string): void {
+  if (typeof window !== 'undefined' && typeof localStorage !== 'undefined' && token) {
+    localStorage.setItem('hello_auth_token', token);
+  }
+}
+
+export function clearStoredAuthToken(): void {
+  if (typeof window !== 'undefined' && typeof localStorage !== 'undefined') {
+    localStorage.removeItem('hello_auth_token');
+  }
+}
+
+export function getApiBaseUrl(): string {
+  // 1. Vite environment variable (e.g. VITE_API_URL)
+  if (import.meta.env?.VITE_API_URL) {
+    return import.meta.env.VITE_API_URL.replace(/\/+$/, '');
+  }
+
+  // 2. Custom override in localStorage (if developer specifies another URL)
+  if (typeof window !== 'undefined') {
+    const custom = localStorage.getItem('hello_api_base_url');
+    if (custom) return custom.replace(/\/+$/, '');
+  }
+
+  // 3. Native Android / Capacitor -> HTTPS Deployed Backend
+  if (Capacitor.isNativePlatform()) {
+    return PRODUCTION_API_URL;
+  }
+
+  // 4. Web browser -> relative requests to current origin
+  return '';
+}
+
+export function getApiUrl(path: string): string {
+  if (path.startsWith('http://') || path.startsWith('https://')) {
+    return path;
+  }
+  const baseUrl = getApiBaseUrl();
+  const normalizedPath = path.startsWith('/') ? path : `/${path}`;
+  return baseUrl ? `${baseUrl}${normalizedPath}` : normalizedPath;
+}
+
 /**
  * Shared API fetch wrapper that executes fetch and parses the response.
  */
@@ -118,6 +169,22 @@ export async function apiRequest<T = any>(
   input: RequestInfo | URL,
   init?: RequestInit
 ): Promise<T> {
-  const response = await fetch(input, init);
+  let target: RequestInfo | URL = input;
+  if (typeof target === 'string') {
+    target = getApiUrl(target);
+  }
+
+  const token = getStoredAuthToken();
+  const headers = new Headers(init?.headers || {});
+  if (token && !headers.has('Authorization')) {
+    headers.set('Authorization', `Bearer ${token}`);
+  }
+
+  const mergedInit: RequestInit = {
+    ...init,
+    headers,
+    credentials: init?.credentials || 'include',
+  };
+  const response = await fetch(target, mergedInit);
   return parseApiResponse<T>(response);
 }

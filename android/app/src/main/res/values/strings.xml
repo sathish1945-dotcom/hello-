@@ -4,4 +4,5 @@
     <string name="title_activity_main">Hello</string>
     <string name="package_name">com.hello.ai</string>
     <string name="custom_url_scheme">com.hello.ai</string>
+    <string name="google_web_client_id">885739506439-2fok3opj8bgnja02at0e9ghs62hbjpju.apps.googleusercontent.com</string>
 </resources>
