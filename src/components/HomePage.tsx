@@ -4,7 +4,6 @@ import {
   Users,
   Mic,
   Phone,
-  Heart,
   GraduationCap,
   Folder,
   Link,
@@ -22,6 +21,19 @@ import {
 } from "lucide-react";
 import type { Chat } from "../types/index.ts";
 import type { FeatureNoticeConfig } from "./FeatureNoticeModal.tsx";
+import friendModeHero from "../assets/friend-mode-hero.png";
+
+function FriendModeLogo({ className, ...props }: React.ComponentProps<"img">) {
+  return (
+    <img
+      src={friendModeHero}
+      alt="Friend Mode"
+      aria-hidden="true"
+      className={`friend-mode-tile-icon ${className || ""}`}
+      {...props}
+    />
+  );
+}
 
 interface HomePageProps {
   conversations: Chat[];
@@ -137,7 +149,7 @@ export function HomePage({
     },
     {
       label: "Friend Mode",
-      Icon: Heart,
+      Icon: FriendModeLogo,
       color: "orange",
       action: onOpenFriendMode || (() =>
         onNewChat("Let's have a friendly conversation. Ask me how my day is going.")),

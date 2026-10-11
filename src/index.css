@@ -292,6 +292,7 @@
     border-color 0.15s;
 }
 .hello-tile svg,
+.hello-tile img,
 .hello-role svg {
   color: var(--accent);
   width: 30px;
@@ -299,6 +300,11 @@
   filter: drop-shadow(
     0 2px 8px color-mix(in srgb, var(--accent) 25%, transparent)
   );
+}
+.hello-tile img {
+  object-fit: cover;
+  border-radius: 9px;
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
 }
 .hello-tile span {
   font-size: 13px;
@@ -615,7 +621,8 @@
   .hello-tile span {
     font-size: 12px;
   }
-  .hello-tile svg {
+  .hello-tile svg,
+  .hello-tile img {
     width: 27px;
     height: 27px;
   }
