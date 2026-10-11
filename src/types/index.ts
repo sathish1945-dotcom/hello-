@@ -119,11 +119,26 @@ export const ALLOWED_RETURN_SCREENS = [
 
 export type ReturnScreen = typeof ALLOWED_RETURN_SCREENS[number];
 
-export function validateReturnScreen(rawScreen: unknown): ReturnScreen {
-  if (typeof rawScreen === 'string' && (ALLOWED_RETURN_SCREENS as readonly string[]).includes(rawScreen.trim())) {
-    return rawScreen.trim() as ReturnScreen;
+export function normalizeReturnScreen(rawScreen: unknown): ReturnScreen {
+  if (typeof rawScreen !== 'string') return 'chat';
+  const s = rawScreen.trim().toLowerCase().replace(/_/g, '-');
+  if (s === 'friend' || s === 'friend-mode' || s === 'friendmode') {
+    return 'friend-mode';
+  }
+  if (s === 'teacher' || s === 'teacher-mode' || s === 'teachermode') {
+    return 'teacher-mode';
+  }
+  if (s === 'chat' || s === 'dashboard' || s === 'home' || s === 'main') {
+    return 'chat';
+  }
+  if ((ALLOWED_RETURN_SCREENS as readonly string[]).includes(s)) {
+    return s as ReturnScreen;
   }
   return 'chat';
+}
+
+export function validateReturnScreen(rawScreen: unknown): ReturnScreen {
+  return normalizeReturnScreen(rawScreen);
 }
 
 export interface PendingAction {

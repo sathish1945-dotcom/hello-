@@ -88,7 +88,30 @@ export default function App() {
 
   // Initial Load: check config, auth, and provider status
   useEffect(() => {
-    fetchCurrentUser();
+    let nativeListenerHandle: { remove: () => void } | null = null;
+
+    const initializeAppAndRouting = async () => {
+      // 1. Restore authenticated user first to avoid unauthenticated /api/openrouter/status races
+      await fetchCurrentUser();
+
+      // 2. Check pending native deep links on mount (for cold launch / activity recreation)
+      await checkPendingNativeDeepLink();
+    };
+
+    initializeAppAndRouting();
+
+    // Register real-time native deep link listener (for warm launch / onNewIntent)
+    if (Capacitor.isNativePlatform()) {
+      NativeGoogleAuth.addListener('appUrlOpen', async (data: { url?: string }) => {
+        if (data?.url) {
+          await processDeepLinkUrl(data.url);
+        }
+      }).then((handle) => {
+        nativeListenerHandle = handle;
+      }).catch((err) => {
+        console.warn('[App] Native deep link listener registration:', err);
+      });
+    }
 
     // Listen to Firebase auth state: if user is logged into Firebase but backend has no session, exchange ID token automatically
     const unsubscribe = onAuthStateChanged(auth, async (fbUser) => {
@@ -117,10 +140,7 @@ export default function App() {
       }
     });
 
-    // Check pending native deep links on mount (for Android activity recreation / deep link cold launch)
-    checkPendingNativeDeepLink();
-
-    // Check URL parameters for OAuth redirects (e.g. mobile full-page redirects)
+    // Check URL parameters for OAuth redirects (e.g. mobile web full-page redirects)
     if (typeof window !== 'undefined') {
       const params = new URLSearchParams(window.location.search);
       const connected = params.get('integration_connected');
@@ -153,7 +173,12 @@ export default function App() {
       }
     }
 
-    return () => unsubscribe();
+    return () => {
+      unsubscribe();
+      if (nativeListenerHandle) {
+        nativeListenerHandle.remove();
+      }
+    };
   }, []);
 
   useEffect(() => {
@@ -217,6 +242,57 @@ export default function App() {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, routingStatus]);
 
+  interface StoredOAuthAttempt {
+    state: string;
+    returnScreen: ReturnScreen;
+    pendingAction?: PendingAction;
+    friendModeActiveBeforeNav?: boolean;
+    createdAt: number;
+    expiresAt: number;
+  }
+
+  const getStoredOAuthAttempt = (): StoredOAuthAttempt | null => {
+    if (typeof window === 'undefined') return null;
+    try {
+      const raw = localStorage.getItem('hello_pending_oauth');
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== 'object') return null;
+      return {
+        state: String(parsed.state || ''),
+        returnScreen: validateReturnScreen(parsed.returnScreen),
+        pendingAction: parsed.pendingAction,
+        friendModeActiveBeforeNav: Boolean(parsed.friendModeActiveBeforeNav),
+        createdAt: Number(parsed.createdAt || Date.now()),
+        expiresAt: Number(parsed.expiresAt || Date.now() + 10 * 60 * 1000),
+      };
+    } catch {
+      return null;
+    }
+  };
+
+  const saveStoredOAuthAttempt = (attempt: StoredOAuthAttempt) => {
+    if (typeof window === 'undefined') return;
+    try {
+      localStorage.setItem('hello_pending_oauth', JSON.stringify(attempt));
+      localStorage.setItem('hello_active_oauth_state', attempt.state);
+      localStorage.setItem(`hello_oauth_session_${attempt.state}`, JSON.stringify(attempt));
+    } catch {}
+  };
+
+  const clearStoredOAuthAttempt = () => {
+    if (typeof window === 'undefined') return;
+    try {
+      const activeState = localStorage.getItem('hello_active_oauth_state');
+      if (activeState) {
+        localStorage.removeItem(`hello_oauth_session_${activeState}`);
+      }
+      localStorage.removeItem('hello_active_oauth_state');
+      localStorage.removeItem('hello_pending_oauth');
+      localStorage.removeItem('hello_pending_return_screen');
+    } catch {}
+  };
+
   const processedOAuthStatesRef = useRef<Set<string>>(new Set());
   const handleSendMessageRef = useRef<((prompt?: string, chatId?: string) => Promise<void>) | null>(null);
 
@@ -266,42 +342,55 @@ export default function App() {
     stopPollingOpenRouter();
     setIsConnectingOpenRouter(false);
 
-    const activeState = params.state || (typeof window !== 'undefined' ? localStorage.getItem('hello_active_oauth_state') : null);
+    const storedAttempt = getStoredOAuthAttempt();
 
-    let storedSession: any = null;
-    if (activeState && typeof window !== 'undefined') {
-      try {
-        const raw = localStorage.getItem(`hello_oauth_session_${activeState}`);
-        if (raw) storedSession = JSON.parse(raw);
-      } catch (_) {}
+    // Reject mismatched state if incoming state is provided and does not match stored attempt
+    if (params.state && storedAttempt && storedAttempt.state && storedAttempt.state !== params.state) {
+      console.warn('[OAuth Return] State mismatch detected:', {
+        incoming: params.state,
+        expected: storedAttempt.state,
+      });
+      setBannerAlert({
+        message: 'Security validation failed: OAuth state mismatch.',
+        type: 'error',
+      });
+      restoreScreen(validateReturnScreen(storedAttempt.returnScreen));
+      clearStoredOAuthAttempt();
+      return;
     }
 
-    // Exactly-once execution guard: prevents duplicated actions across deep links, polling, window messages, and activity reloads
-    const stateKey = activeState || (params.state ? `state_${params.state}` : `time_${Math.floor(Date.now() / 4000)}`);
-    if (processedOAuthStatesRef.current.has(stateKey) || (storedSession && storedSession.consumed)) {
+    // Reject expired attempts (>10 minutes)
+    if (storedAttempt && Date.now() > storedAttempt.expiresAt) {
+      console.warn('[OAuth Return] Stored OAuth attempt has expired');
+      setBannerAlert({
+        message: 'Authorization attempt expired. Please try connecting again.',
+        type: 'error',
+      });
+      restoreScreen(validateReturnScreen(storedAttempt.returnScreen));
+      clearStoredOAuthAttempt();
+      return;
+    }
+
+    // Exactly-once execution guard per attempt/state
+    const stateKey = params.state || storedAttempt?.state || `time_${Math.floor(Date.now() / 4000)}`;
+    if (processedOAuthStatesRef.current.has(stateKey)) {
       console.log('[OAuth Return] State already processed, skipping duplicate:', stateKey);
       return;
     }
     processedOAuthStatesRef.current.add(stateKey);
-    if (storedSession && activeState && typeof window !== 'undefined') {
-      storedSession.consumed = true;
-      try {
-        localStorage.setItem(`hello_oauth_session_${activeState}`, JSON.stringify(storedSession));
-        localStorage.removeItem('hello_active_oauth_state');
-      } catch (_) {}
-    }
 
-    const rawTarget = params.returnScreen || storedSession?.returnScreen;
+    const rawTarget = params.returnScreen || storedAttempt?.returnScreen;
     const targetScreen = validateReturnScreen(rawTarget);
 
     if (params.status === 'error') {
       const errMsg = params.error || 'Authorization was cancelled or rejected by the provider.';
       setBannerAlert({ message: errMsg, type: 'error' });
       restoreScreen(targetScreen);
+      clearStoredOAuthAttempt();
       return;
     }
 
-    // Success flow: MUST verify provider connection through backend before declaring connected or running pending action
+    // Success flow: MUST verify provider connection through authenticated backend before declaring connected
     try {
       const statusData = await apiRequest<{ connected: boolean; updatedAt?: string }>('/api/openrouter/status');
       if (!statusData || !statusData.connected) {
@@ -310,6 +399,7 @@ export default function App() {
           type: 'error',
         });
         restoreScreen(targetScreen);
+        clearStoredOAuthAttempt();
         return;
       }
 
@@ -328,12 +418,12 @@ export default function App() {
       });
       setTimeout(() => setBannerAlert(null), 4000);
 
-      // Restore originating screen
+      // Restore originating screen (Friend Mode / Settings / etc.)
       restoreScreen(targetScreen);
 
       // Restore pending action exactly once
       const pendingAction: PendingAction | undefined =
-        params.pendingAction || storedSession?.pendingAction;
+        params.pendingAction || storedAttempt?.pendingAction;
 
       if (pendingAction) {
         if (pendingAction.type === 'send_prompt' && pendingAction.prompt) {
@@ -350,10 +440,9 @@ export default function App() {
       }
 
       // Safeguard Friend Mode microphone resumption:
-      // Resume microphone capture only if Friend Mode remains enabled, permissions allow it and Android startup conditions permit it.
-      // If user paused or closed Friend Mode during authorization, respect that newer state.
+      // Resume microphone capture only if Friend Mode remains enabled, permissions allow it and it was active before navigation.
       const currentFriendState = friendModeBridge.getState();
-      const wasActiveBefore = Boolean(storedSession?.friendModeActiveBeforeNav);
+      const wasActiveBefore = Boolean(storedAttempt?.friendModeActiveBeforeNav);
 
       if (currentFriendState !== 'DISABLED' && wasActiveBefore) {
         const perms = await friendModeBridge.checkPermissions();
@@ -364,8 +453,10 @@ export default function App() {
           console.log('[OAuth Return] Microphone permission not granted, leaving Friend Mode paused');
         }
       } else {
-        console.log('[OAuth Return] Friend Mode disabled or closed by user, respecting newer state');
+        console.log('[OAuth Return] Friend Mode disabled or was not active before, respecting state');
       }
+
+      clearStoredOAuthAttempt();
     } catch (err: any) {
       console.warn('[OAuth Return] Verification error:', err);
       setBannerAlert({
@@ -373,6 +464,23 @@ export default function App() {
         type: 'error',
       });
       restoreScreen(targetScreen);
+      clearStoredOAuthAttempt();
+    }
+  };
+
+  const processDeepLinkUrl = async (urlStr: string) => {
+    try {
+      const urlObj = new URL(urlStr.replace(/^hello:\/\//i, 'https://dummy.local/'));
+      const provider = urlObj.searchParams.get('provider');
+      const status = (urlObj.searchParams.get('status') as 'success' | 'error') || 'success';
+      const returnScreen = urlObj.searchParams.get('return_screen') || undefined;
+      const state = urlObj.searchParams.get('state') || undefined;
+      const error = urlObj.searchParams.get('error') || undefined;
+      if (provider === 'openrouter') {
+        await handleOAuthReturn({ provider, status, returnScreen, state, error });
+      }
+    } catch (e) {
+      console.warn('[App] Error processing deep link URL:', e);
     }
   };
 
@@ -381,15 +489,7 @@ export default function App() {
       try {
         const res = await NativeGoogleAuth.getPendingDeepLink();
         if (res?.url) {
-          const urlObj = new URL(res.url.replace(/^hello:\/\//, 'https://dummy.local/'));
-          const provider = urlObj.searchParams.get('provider');
-          const status = (urlObj.searchParams.get('status') as 'success' | 'error') || 'success';
-          const returnScreen = urlObj.searchParams.get('return_screen') || undefined;
-          const state = urlObj.searchParams.get('state') || undefined;
-          const error = urlObj.searchParams.get('error') || undefined;
-          if (provider === 'openrouter') {
-            await handleOAuthReturn({ provider, status, returnScreen, state, error });
-          }
+          await processDeepLinkUrl(res.url);
         }
       } catch (e) {
         console.warn('[App] Error checking pending deep link:', e);
@@ -431,7 +531,7 @@ export default function App() {
     }
   };
 
-  const startPollingOpenRouter = (expectedState?: string) => {
+  const startPollingOpenRouter = (expectedState?: string, returnScreen?: ReturnScreen, pendingAction?: PendingAction) => {
     stopPollingOpenRouter();
     let attempts = 0;
     const maxAttempts = 90; // 3 minutes total (poll every 2s)
@@ -447,10 +547,13 @@ export default function App() {
       try {
         const data = await apiRequest<{ connected: boolean; updatedAt?: string }>('/api/openrouter/status');
         if (data && data.connected) {
+          const attempt = getStoredOAuthAttempt();
           await handleOAuthReturn({
             provider: 'openrouter',
             status: 'success',
-            state: expectedState,
+            state: expectedState || attempt?.state,
+            returnScreen: returnScreen || attempt?.returnScreen,
+            pendingAction: pendingAction || attempt?.pendingAction,
           });
         }
       } catch {
@@ -467,9 +570,13 @@ export default function App() {
         try {
           const data = await apiRequest<{ connected: boolean; updatedAt?: string }>('/api/openrouter/status');
           if (data && data.connected) {
+            const attempt = getStoredOAuthAttempt();
             await handleOAuthReturn({
               provider: 'openrouter',
               status: 'success',
+              state: attempt?.state,
+              returnScreen: attempt?.returnScreen,
+              pendingAction: attempt?.pendingAction,
             });
           }
         } catch (_) {}
@@ -571,24 +678,21 @@ export default function App() {
       }
 
       if (data.state && typeof window !== 'undefined') {
-        const sessionRecord = {
+        const canonicalTarget = validateReturnScreen(data.returnScreen || returnScreen);
+        saveStoredOAuthAttempt({
           state: data.state,
-          returnScreen: data.returnScreen || returnScreen,
+          returnScreen: canonicalTarget,
           pendingAction,
           friendModeActiveBeforeNav,
-          timestamp: Date.now(),
-          consumed: false,
-        };
-        try {
-          localStorage.setItem(`hello_oauth_session_${data.state}`, JSON.stringify(sessionRecord));
-          localStorage.setItem('hello_active_oauth_state', data.state);
-        } catch (_) {}
+          createdAt: Date.now(),
+          expiresAt: Date.now() + 10 * 60 * 1000,
+        });
       }
 
       // If running as native Android/iOS Capacitor app, open system browser
       if (Capacitor.isNativePlatform()) {
         await NativeGoogleAuth.openSystemUrl({ url: data.url });
-        startPollingOpenRouter(data.state);
+        startPollingOpenRouter(data.state, returnScreen, pendingAction);
         return;
       }
 
@@ -1222,6 +1326,8 @@ export default function App() {
           setInput(prompt);
           requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>('textarea')?.focus());
         }}
+        onConnectOpenRouter={() => handleConnectOpenRouter('friend-mode', { type: 'resume_friend_mode' })}
+        isOpenRouterConnected={providerStatus?.provider === 'openrouter' && providerStatus?.connection_status === 'connected'}
       />
 
       {/* History (Conversations & My Memories) Modal */}

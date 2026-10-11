@@ -23,12 +23,16 @@ interface FriendModeModalProps {
   isOpen: boolean;
   onClose: () => void;
   onStartChat: (prompt: string) => void;
+  onConnectOpenRouter?: () => void;
+  isOpenRouterConnected?: boolean;
 }
 
 export const FriendModeModal: React.FC<FriendModeModalProps> = ({
   isOpen,
   onClose,
   onStartChat,
+  onConnectOpenRouter,
+  isOpenRouterConnected,
 }) => {
   const [state, setState] = useState<FriendModeState>(friendModeBridge.getState());
   const [language, setLanguage] = useState<FriendLanguage>(friendModeBridge.getLanguage());
@@ -236,6 +240,47 @@ export const FriendModeModal: React.FC<FriendModeModalProps> = ({
 
         {/* Scrollable Body */}
         <div className="flex-1 overflow-y-auto p-4 sm:p-5 space-y-4 text-xs">
+          {/* Feature Artwork Banner (Cyan/Pink smiling characters, no stretching) */}
+          <div className="relative w-full overflow-hidden rounded-2xl bg-zinc-950/80 border border-cyan-500/30 shadow-md flex items-center justify-center p-2">
+            <img
+              src="/assets/friend-mode-hero.png"
+              alt="Friend Mode"
+              className="w-full max-h-44 sm:max-h-52 object-contain rounded-xl"
+            />
+          </div>
+
+          {/* OpenRouter AI Brain Status Card */}
+          <div className="p-3.5 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50/50 dark:bg-zinc-950/40 flex items-center justify-between gap-3">
+            <div className="space-y-0.5">
+              <div className="flex items-center gap-2">
+                <span className="font-semibold text-zinc-900 dark:text-zinc-100">
+                  OpenRouter AI Intelligence
+                </span>
+                {isOpenRouterConnected ? (
+                  <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 font-medium">
+                    Connected • Free Models Ready
+                  </span>
+                ) : (
+                  <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20 font-medium">
+                    Not Connected
+                  </span>
+                )}
+              </div>
+              <p className="text-[11px] text-zinc-500">
+                Powers voice replies and intelligent conversational capabilities with zero-cost AI models.
+              </p>
+            </div>
+            {!isOpenRouterConnected && onConnectOpenRouter && (
+              <button
+                type="button"
+                onClick={onConnectOpenRouter}
+                className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-cyan-600 hover:bg-cyan-700 text-white transition-all shadow-xs shrink-0 active:scale-95 flex items-center gap-1.5"
+              >
+                <span>Connect</span>
+              </button>
+            )}
+          </div>
+
           {/* Main Activation Banner */}
           <div className="p-4 rounded-xl border border-orange-500/20 bg-gradient-to-r from-orange-500/10 via-amber-500/5 to-transparent flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
             <div className="space-y-1">

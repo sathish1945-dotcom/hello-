@@ -256,17 +256,17 @@ export function HomePage({
         </div>
       </section>
       <nav className="hello-features" aria-label="Quick actions">
-        {features.map(({ label, Icon, color, action, updatePending }) => (
+        {features.map(({ label, Icon, color, action }) => (
           <button
             key={label}
             className={`hello-tile tone-${color}`}
             onClick={action}
             disabled={!action}
-            title={updatePending ? modeUpdateTitle : !action ? `${label} — coming soon` : label}
+            title={!action ? `${label} — coming soon` : label}
           >
             <Icon aria-hidden="true" />
             <span>{label}</span>
-            {!action && <small>{updatePending ? modeUpdateLabel : "Coming soon"}</small>}
+            {!action && <small>Coming soon</small>}
           </button>
         ))}
       </nav>

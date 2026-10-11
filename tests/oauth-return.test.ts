@@ -41,11 +41,20 @@ after(async () => {
   } catch {}
 });
 
-test('validateReturnScreen strictly preserves allowlisted destinations and safely defaults unknown inputs to chat', () => {
+test('validateReturnScreen strictly preserves allowlisted destinations, canonicalizes aliases, and safely defaults unknown inputs to chat', () => {
   // All allowlisted destinations must return their exact values
   for (const screen of ALLOWED_RETURN_SCREENS) {
     assert.equal(validateReturnScreen(screen), screen);
   }
+
+  // Canonicalize inconsistent destination aliases to canonical allowlisted values
+  assert.equal(validateReturnScreen('friend'), 'friend-mode');
+  assert.equal(validateReturnScreen('friend_mode'), 'friend-mode');
+  assert.equal(validateReturnScreen('friend-mode'), 'friend-mode');
+  assert.equal(validateReturnScreen('friendmode'), 'friend-mode');
+  assert.equal(validateReturnScreen('teacher'), 'teacher-mode');
+  assert.equal(validateReturnScreen('teacher_mode'), 'teacher-mode');
+  assert.equal(validateReturnScreen('teacher-mode'), 'teacher-mode');
 
   // Any unknown, malicious, empty, or unexpected values must fallback to 'chat'
   assert.equal(validateReturnScreen('dashboard'), 'chat');
@@ -286,3 +295,28 @@ test('OAuth callback with expired or missing state rejects gracefully', async ()
   assert.ok(html.includes('Authorization session expired or was already used'));
   assert.ok(html.includes('status=error'));
 });
+
+test('Inconsistent returnScreen alias "friend_mode" or "friend" canonicalizes to "friend-mode" across connect and callback', async () => {
+  const loginRes = await post('/api/auth/login', {
+    email: 'oauth_tester@example.com',
+    password: 'secure-password-12345',
+  });
+  assert.equal(loginRes.status, 200);
+  const cookie = loginRes.headers.get('set-cookie')!.split(';')[0];
+
+  // 1. Connect with raw 'friend_mode'
+  const connectRes = await fetch(`${base}/api/openrouter/connect?return_screen=friend_mode`, {
+    method: 'GET',
+    headers: { Cookie: cookie },
+  });
+  assert.equal(connectRes.status, 200);
+  const data = await connectRes.json();
+  // Must be canonical 'friend-mode'
+  assert.equal(data.returnScreen, 'friend-mode');
+
+  // Verify DB state contains canonical 'friend-mode'
+  const savedState = await db.consumeOAuthState(data.state);
+  assert.ok(savedState);
+  assert.equal(savedState?.return_screen, 'friend-mode');
+});
+

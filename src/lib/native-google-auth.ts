@@ -18,6 +18,10 @@ interface NativeGoogleAuthPlugin {
   signOut(): Promise<{ success: boolean }>;
   openSystemUrl(options: { url: string }): Promise<{ success: boolean }>;
   getPendingDeepLink(): Promise<{ url?: string | null }>;
+  addListener(
+    eventName: 'appUrlOpen' | 'deepLinkReceived',
+    listenerFunc: (data: { url?: string }) => void
+  ): Promise<{ remove: () => void }>;
 }
 
 export const NativeGoogleAuth = registerPlugin<NativeGoogleAuthPlugin>('NativeGoogleAuth');

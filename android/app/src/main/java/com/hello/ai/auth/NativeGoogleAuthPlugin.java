@@ -159,11 +159,36 @@ public class NativeGoogleAuthPlugin extends Plugin {
         }
     }
 
+    private static volatile NativeGoogleAuthPlugin sInstance = null;
     private static volatile String lastDeepLinkUrl = null;
+
+    @Override
+    public void load() {
+        super.load();
+        sInstance = this;
+    }
+
+    @Override
+    protected void handleOnDestroy() {
+        if (sInstance == this) {
+            sInstance = null;
+        }
+        super.handleOnDestroy();
+    }
 
     public static synchronized void setLastDeepLink(String url) {
         lastDeepLinkUrl = url;
         Log.i(TAG, "Recorded pending deep link URL: " + url);
+        if (sInstance != null && url != null) {
+            try {
+                JSObject data = new JSObject();
+                data.put("url", url);
+                sInstance.notifyListeners("appUrlOpen", data);
+                sInstance.notifyListeners("deepLinkReceived", data);
+            } catch (Exception e) {
+                Log.w(TAG, "Failed to notify deep link listeners", e);
+            }
+        }
     }
 
     @PluginMethod

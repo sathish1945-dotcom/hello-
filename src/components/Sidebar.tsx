@@ -114,9 +114,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
           {/* Friend Mode */}
           <button
             onClick={menuAction(onOpenFriendMode)}
-            className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-zinc-700 dark:text-zinc-300 hover:bg-orange-500/10 hover:text-orange-600 dark:hover:text-orange-400 transition-colors"
+            className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-zinc-700 dark:text-zinc-300 hover:bg-cyan-500/10 hover:text-cyan-600 dark:hover:text-cyan-400 transition-colors"
           >
-            <Heart className="w-4 h-4 text-orange-500" />
+            <img
+              src="/assets/friend-mode-icon.png"
+              alt=""
+              aria-hidden="true"
+              className="w-5 h-5 rounded-md object-cover shrink-0 shadow-xs border border-cyan-500/30"
+            />
             <span>Friend Mode</span>
           </button>
 

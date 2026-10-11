@@ -15,6 +15,7 @@ import android.view.MotionEvent;
 import android.view.View;
 import android.view.WindowManager;
 import android.widget.FrameLayout;
+import android.widget.ImageView;
 import android.widget.TextView;
 
 /**
@@ -38,6 +39,8 @@ public class FloatingEmojiOverlay {
     private final WindowManager windowManager;
     private View overlayView;
     private TextView emojiTextView;
+    private ImageView characterImageView;
+    private GradientDrawable backgroundDrawable;
     private View statusIndicatorView;
     private WindowManager.LayoutParams layoutParams;
     private OverlayInteractionListener listener;
@@ -131,21 +134,44 @@ public class FloatingEmojiOverlay {
         int size = dpToPx(56);
         container.setLayoutParams(new FrameLayout.LayoutParams(size, size));
 
-        // Circular background with subtle elevation shadow and warm tone
-        GradientDrawable background = new GradientDrawable();
-        background.setShape(GradientDrawable.OVAL);
-        background.setColor(Color.parseColor("#FFFFFF"));
-        background.setStroke(dpToPx(2), Color.parseColor("#EA580C")); // Orange accent
+        // Circular background with subtle elevation shadow and cyan/pink glow theme
+        backgroundDrawable = new GradientDrawable();
+        backgroundDrawable.setShape(GradientDrawable.OVAL);
+        backgroundDrawable.setColor(Color.parseColor("#09090B"));
+        backgroundDrawable.setStroke(dpToPx(2), Color.parseColor("#06B6D4")); // Cyan brand ring
 
-        container.setBackground(background);
+        container.setBackground(backgroundDrawable);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
             container.setElevation(dpToPx(8));
         }
 
-        // Floating Emoji TextView
+        // Compact smiling characters icon (from user artwork)
+        characterImageView = new ImageView(context);
+        boolean hasCustomIcon = false;
+        try {
+            int resId = context.getResources().getIdentifier("ic_friend_mode", "drawable", context.getPackageName());
+            if (resId != 0) {
+                characterImageView.setImageResource(resId);
+                characterImageView.setScaleType(ImageView.ScaleType.CENTER_CROP);
+                hasCustomIcon = true;
+            }
+        } catch (Exception ignored) {}
+
+        FrameLayout.LayoutParams iconParams = new FrameLayout.LayoutParams(
+                dpToPx(44),
+                dpToPx(44)
+        );
+        iconParams.gravity = Gravity.CENTER;
+        characterImageView.setLayoutParams(iconParams);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            characterImageView.setClipToOutline(true);
+        }
+        container.addView(characterImageView);
+
+        // Fallback or state emoji TextView (hidden if custom icon loaded)
         emojiTextView = new TextView(context);
         emojiTextView.setText("👋");
-        emojiTextView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 26);
+        emojiTextView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 24);
         emojiTextView.setGravity(Gravity.CENTER);
         FrameLayout.LayoutParams emojiParams = new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
@@ -153,6 +179,9 @@ public class FloatingEmojiOverlay {
         );
         emojiParams.gravity = Gravity.CENTER;
         container.addView(emojiTextView, emojiParams);
+        if (hasCustomIcon) {
+            emojiTextView.setVisibility(View.GONE);
+        }
 
         // Small pulse/status indicator dot
         statusIndicatorView = new View(context);
@@ -163,7 +192,7 @@ public class FloatingEmojiOverlay {
 
         GradientDrawable dotBg = new GradientDrawable();
         dotBg.setShape(GradientDrawable.OVAL);
-        dotBg.setColor(Color.parseColor("#10B981")); // Emerald idle
+        dotBg.setColor(Color.parseColor("#06B6D4")); // Cyan idle/listening
         statusIndicatorView.setBackground(dotBg);
         container.addView(statusIndicatorView, dotParams);
 
@@ -252,8 +281,11 @@ public class FloatingEmojiOverlay {
             GradientDrawable dot = new GradientDrawable();
             dot.setShape(GradientDrawable.OVAL);
 
+            int strokeColor = Color.parseColor("#06B6D4"); // Cyan default
+
             switch (state) {
                 case ACTIVE_LISTENING:
+                    strokeColor = Color.parseColor("#EC4899"); // Pink
                     dot.setColor(Color.parseColor("#EF4444")); // Red when actively recording
                     if (emojiTextView != null) {
                         emojiTextView.setText("👂");
@@ -261,13 +293,15 @@ public class FloatingEmojiOverlay {
                     }
                     break;
                 case WAITING_FOR_FINISH:
-                    dot.setColor(Color.parseColor("#F97316")); // Warm orange when waiting for silence
+                    strokeColor = Color.parseColor("#F59E0B"); // Amber
+                    dot.setColor(Color.parseColor("#F97316")); // Warm orange when waiting for speech end
                     if (emojiTextView != null) {
                         emojiTextView.setText("⏳");
                         emojiTextView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 24);
                     }
                     break;
                 case LISTENING_FOR_WAKE:
+                    strokeColor = Color.parseColor("#06B6D4"); // Cyan
                     dot.setColor(Color.parseColor("#3B82F6")); // Blue when listening for wake phrase
                     if (emojiTextView != null) {
                         emojiTextView.setText("👋");
@@ -275,6 +309,7 @@ public class FloatingEmojiOverlay {
                     }
                     break;
                 case THINKING:
+                    strokeColor = Color.parseColor("#06B6D4"); // Cyan
                     dot.setColor(Color.parseColor("#F59E0B")); // Amber when thinking
                     if (emojiTextView != null) {
                         emojiTextView.setText("🤔");
@@ -282,6 +317,7 @@ public class FloatingEmojiOverlay {
                     }
                     break;
                 case SPEAKING:
+                    strokeColor = Color.parseColor("#EC4899"); // Pink
                     dot.setColor(Color.parseColor("#8B5CF6")); // Purple when speaking
                     if (emojiTextView != null) {
                         emojiTextView.setText("🗣️");
@@ -289,6 +325,7 @@ public class FloatingEmojiOverlay {
                     }
                     break;
                 case ERROR:
+                    strokeColor = Color.parseColor("#EF4444");
                     dot.setColor(Color.parseColor("#991B1B"));
                     if (emojiTextView != null) {
                         emojiTextView.setText("⚠️");
@@ -296,12 +333,17 @@ public class FloatingEmojiOverlay {
                     }
                     break;
                 default:
+                    strokeColor = Color.parseColor("#64748B");
                     dot.setColor(Color.parseColor("#10B981")); // Emerald
                     if (emojiTextView != null) {
                         emojiTextView.setText("👋");
                         emojiTextView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 26);
                     }
                     break;
+            }
+
+            if (backgroundDrawable != null) {
+                backgroundDrawable.setStroke(dpToPx(2), strokeColor);
             }
             statusIndicatorView.setBackground(dot);
         });

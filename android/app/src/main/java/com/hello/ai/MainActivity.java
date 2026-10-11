@@ -26,7 +26,8 @@ public class MainActivity extends BridgeActivity {
     private void handleDeepLink(Intent intent) {
         if (intent == null || intent.getData() == null) return;
         Uri uri = intent.getData();
-        if ("hello".equals(uri.getScheme()) && "oauth-callback".equals(uri.getHost())) {
+        if ("hello".equalsIgnoreCase(uri.getScheme()) &&
+            ("oauth-callback".equalsIgnoreCase(uri.getHost()) || "oauth-callback".equalsIgnoreCase(uri.getAuthority()))) {
             NativeGoogleAuthPlugin.setLastDeepLink(uri.toString());
         }
     }
