@@ -125,7 +125,9 @@ export async function handleOpenRouterConnect(req: Request, res: Response) {
 
     const appUrl = getAppUrl(req);
     // Include state in callback URL query string so state is preserved across redirects
-    const callbackUrl = `${appUrl}/api/openrouter/callback?state=${encodeURIComponent(state)}`;
+    const platform = (req.query.platform || req.body?.platform) === 'android' ? 'android' : 'web';
+    const callbackUrl = `${appUrl}/api/openrouter/callback?state=${encodeURIComponent(state)}&platform=${platform}`;
+    const previousConnection = await db.getProviderConnection(user.id, 'openrouter');
 
     const params = new URLSearchParams({
       callback_url: callbackUrl,
@@ -139,6 +141,7 @@ export async function handleOpenRouterConnect(req: Request, res: Response) {
     return res.json({
       url: authUrl,
       callbackUrl,
+      previousUpdatedAt: previousConnection?.updated_at || null,
       state,
       returnScreen,
       pendingAction: pendingAction || null,
@@ -184,7 +187,9 @@ export async function handleOpenRouterCallback(req: Request, res: Response) {
     const errorParam = !success ? `&error=${encodeURIComponent(safeMessage)}` : '';
     const androidIntentUrl = `intent://oauth-callback?provider=openrouter&${statusParam}&${returnParam}${stateParam}${errorParam}#Intent;scheme=hello;package=com.hello.ai;end`;
     const androidSchemeUrl = `hello://oauth-callback?provider=openrouter&${statusParam}&${returnParam}${stateParam}${errorParam}`;
-    const webRedirect = `${origin}/?integration_connected=openrouter&${returnParam}${success ? '' : '&integration_error=' + encodeURIComponent(safeMessage)}`;
+    const webRedirect = `${origin}/?${success ? 'integration_connected=openrouter' : 'integration_error=' + encodeURIComponent(message)}&${returnParam}${stateParam}`;
+    const nativeReturn = req.query.platform === 'android';
+    const automaticReturn = nativeReturn ? androidIntentUrl : webRedirect;
 
     return res.send(`
       <!DOCTYPE html>
@@ -248,7 +253,7 @@ export async function handleOpenRouterCallback(req: Request, res: Response) {
             <p>${safeMessage}</p>
             <p style="font-size: 0.85rem; color: #71717a;">Returning to ${returnScreen}...</p>
             <div style="margin-top: 20px; display: flex; flex-direction: column; gap: 10px; align-items: center;">
-              <a class="btn" href="${androidIntentUrl}">Return to Hello App</a>
+              <a class="btn" href="${automaticReturn}">Return to Hello App</a>
               <a class="btn btn-secondary" href="${androidSchemeUrl}">Open Hello Directly</a>
               <button class="btn btn-secondary" onclick="window.close()" style="font-size: 0.85rem; padding: 8px 16px;">Close Browser</button>
             </div>
@@ -260,7 +265,7 @@ export async function handleOpenRouterCallback(req: Request, res: Response) {
                 } else {
                   // Attempt automatic handoff back to native app or web
                   setTimeout(() => {
-                    window.location.href = ${JSON.stringify(androidIntentUrl)};
+                    window.location.href = ${JSON.stringify(automaticReturn)};
                   }, 600);
                 }
               } catch (e) {
@@ -319,11 +324,11 @@ export async function handleOpenRouterCallback(req: Request, res: Response) {
         'User-Agent': 'hello/1.0',
       },
       body: JSON.stringify(exchangeBody),
+      signal: AbortSignal.timeout(20000),
     });
 
     if (!exchangeRes.ok) {
-      const errText = await exchangeRes.text();
-      console.error('[OpenRouter OAuth] Key exchange failed with status', exchangeRes.status, errText);
+      console.error('[OpenRouter OAuth] Key exchange failed with status', exchangeRes.status);
       return renderResponse(false, 'Failed to exchange authorization code with OpenRouter. Please try again.', returnScreen);
     }
 

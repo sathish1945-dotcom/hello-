@@ -269,7 +269,7 @@ test('OAuth callback error handling preserves originating screen and renders And
   await db.saveOAuthState(stateId, 'verifier_err', 'user_err', 'models');
 
   // Simulate user cancellation / access denial callback
-  const callbackUrl = `${base}/api/openrouter/callback?error=access_denied&error_description=User+declined&state=${encodeURIComponent(stateId)}`;
+  const callbackUrl = `${base}/api/openrouter/callback?platform=android&error=access_denied&error_description=User+declined&state=${encodeURIComponent(stateId)}`;
   const res = await fetch(callbackUrl);
   assert.equal(res.status, 200);
 
@@ -320,3 +320,56 @@ test('Inconsistent returnScreen alias "friend_mode" or "friend" canonicalizes to
   assert.equal(savedState?.return_screen, 'friend-mode');
 });
 
+
+
+test('Web cancellation returns to the saved Friend Mode screen with state and no success flag', async () => {
+  const state = 'web-cancel-friend';
+  await db.saveOAuthState(state, 'verifier', 'user', 'friend-mode');
+  const response = await fetch(`${base}/api/openrouter/callback?error=access_denied&state=${state}&platform=web`);
+  const html = await response.text();
+  assert.ok(html.includes('/?integration_error='));
+  assert.ok(html.includes('&return_screen=friend-mode&state=web-cancel-friend'));
+  assert.ok(!html.includes('integration_connected=openrouter'));
+  assert.ok(html.includes('window.location.href = "http://'));
+});
+
+test('Successful web PKCE exchange persists connection and returns to Friend Mode', async () => {
+  const login = await post('/api/auth/login', { email: 'oauth_tester@example.com', password: 'secure-password-12345' });
+  const cookie = login.headers.get('set-cookie')!.split(';')[0];
+  const connect = await fetch(`${base}/api/openrouter/connect?return_screen=friend-mode&platform=web`, { headers: { Cookie: cookie } });
+  const attempt = await connect.json();
+  const callback = new URL(new URL(attempt.url).searchParams.get('callback_url')!);
+  assert.equal(callback.searchParams.get('platform'), 'web');
+  assert.equal(attempt.previousUpdatedAt, null);
+  const originalFetch = globalThis.fetch;
+  let exchanges = 0;
+  globalThis.fetch = (async (input, options) => {
+    if (String(input) === 'https://openrouter.ai/api/v1/auth/keys') {
+      exchanges++;
+      const body = JSON.parse(String(options?.body));
+      assert.equal(body.code, 'test-code');
+      assert.equal(body.code_challenge_method, 'S256');
+      assert.ok(body.code_verifier);
+      assert.ok(options?.signal);
+      return new Response(JSON.stringify({ key: 'sk-or-test-secret' }), { status: 200 });
+    }
+    return originalFetch(input, options);
+  }) as typeof fetch;
+  try {
+    callback.searchParams.set('code', 'test-code');
+    const result = await fetch(callback);
+    const html = await result.text();
+    assert.ok(html.includes('OpenRouter Connected!'));
+    assert.ok(html.includes(`integration_connected=openrouter&return_screen=friend-mode&state=${attempt.state}`));
+    assert.ok(!html.includes('sk-or-test-secret'));
+    const status = await (await fetch(`${base}/api/openrouter/status`, { headers: { Cookie: cookie } })).json();
+    assert.equal(status.connected, true);
+    const second = await (await fetch(`${base}/api/openrouter/connect?platform=android`, { headers: { Cookie: cookie } })).json();
+    assert.equal(second.previousUpdatedAt, status.updatedAt);
+    assert.equal(new URL(new URL(second.url).searchParams.get('callback_url')!).searchParams.get('platform'), 'android');
+    await fetch(callback);
+    assert.equal(exchanges, 1, 'Replayed callbacks must not exchange a second time');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
