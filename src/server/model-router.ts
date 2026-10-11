@@ -48,9 +48,11 @@ export async function resolveModelRoute(
     preferences.push(MODEL_REGISTRY.general.primaryModel, 'qwen/qwen3.8-27b:free');
   } else {
     preferences.push(
+      MODEL_REGISTRY.general.primaryModel,
       MODEL_REGISTRY.general.secondaryModel,
       'qwen/qwen3.8-27b:free',
-      'google/gemma-4-26b-a4b-it:free'
+      'google/gemma-4-26b-a4b-it:free',
+      ...availableModels
     );
   }
 
@@ -59,7 +61,7 @@ export async function resolveModelRoute(
   // 2. A boolean flag alone is NOT an authorized monetary budget policy.
   //    Paid models remain strictly disabled unless ALLOW_PAID_MODELS is explicitly enabled
   //    under a verified spending policy.
-  const candidates = [...new Set(preferences)].filter((model) => {
+  const candidates = [...new Set(preferences)].filter((model): model is string => {
     if (!model) return false;
     if (model === 'openrouter/free' || model === 'openrouter/auto:free') return false;
     if (!fallbackCfg.ALLOW_PAID_MODELS && !isFreeModel(model)) return false;
@@ -73,12 +75,15 @@ export async function resolveModelRoute(
     ? candidates.filter((model) => availableModels.has(model))
     : candidates;
 
-  // Do NOT artificially manufacture or pad to 3 candidates.
-  // 3 (MAX_TOTAL_ATTEMPTS) is the upper limit; 0, 1, or 2 eligible models are completely acceptable.
-  const cappedModels = verified.slice(0, fallbackCfg.MAX_TOTAL_ATTEMPTS);
+  const candidatePool = verified.length > 0 ? verified : candidates;
+  const cappedModels = configOverrides?.MAX_TOTAL_ATTEMPTS
+    ? candidatePool.slice(0, configOverrides.MAX_TOTAL_ATTEMPTS)
+    : candidatePool;
 
   const selectedModel = cappedModels[0] || (availableModels.size === 0 ? config.primaryModel : '');
-  const fallbackModels = cappedModels.length > 1 ? cappedModels.slice(1) : [];
+  const fallbackModels = cappedModels.length > 1
+    ? cappedModels.filter((m) => m !== selectedModel)
+    : [];
 
   return {
     category,

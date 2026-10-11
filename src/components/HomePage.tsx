@@ -68,7 +68,6 @@ export function HomePage({
         Date.parse(a.updated_at || a.created_at),
     )
     .slice(0, 3);
-
   const openNotice = (feature: FeatureNoticeConfig) => {
     if (onOpenFeatureNotice) {
       onOpenFeatureNotice(feature);
@@ -148,7 +147,13 @@ export function HomePage({
       Icon: GraduationCap,
       color: "blue",
       action: onOpenTeacherMode || (() =>
-        onNewChat("Help me learn step by step. First ask what subject I want to study.")),
+        openNotice({
+          title: "Teacher Mode",
+          tagline: "Interactive learning & step-by-step guidance",
+          description: "Structured lessons, practice drills, and adaptive explanations across subjects.",
+          highlights: ["Concept breakdowns", "Practice questions", "Step-by-step review"],
+          status: "In Development",
+        })),
     },
     {
       label: "Projects",
@@ -167,6 +172,7 @@ export function HomePage({
           ],
           status: "In Development",
         }),
+
     },
     { label: "Integrations", Icon: Link, color: "cyan", action: onOpenSetup },
     {
@@ -190,15 +196,14 @@ export function HomePage({
       detail: "Chat, ideas, entertainment",
       Icon: Heart,
       color: "pink",
-      prompt: "Let’s chat like friends. Ask me about my day.",
+      updatePending: true,
     },
     {
       name: "Teacher",
       detail: "Study help, explanations",
       Icon: GraduationCap,
       color: "blue",
-      prompt:
-        "Be my study assistant. Ask what I want to learn and explain it step by step.",
+      updatePending: true,
     },
     {
       name: "Business",
@@ -251,17 +256,17 @@ export function HomePage({
         </div>
       </section>
       <nav className="hello-features" aria-label="Quick actions">
-        {features.map(({ label, Icon, color, action }) => (
+        {features.map(({ label, Icon, color, action, updatePending }) => (
           <button
             key={label}
             className={`hello-tile tone-${color}`}
             onClick={action}
             disabled={!action}
-            title={!action ? `${label} — coming soon` : label}
+            title={updatePending ? modeUpdateTitle : !action ? `${label} — coming soon` : label}
           >
             <Icon aria-hidden="true" />
             <span>{label}</span>
-            {!action && <small>Coming soon</small>}
+            {!action && <small>{updatePending ? modeUpdateLabel : "Coming soon"}</small>}
           </button>
         ))}
       </nav>

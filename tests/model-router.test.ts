@@ -17,6 +17,12 @@ test('task routes select explicit available chat models, never the random free r
     const reasoning = await resolveModelRoute('reasoning');
     const finance = await resolveModelRoute('finance');
     const chat = await resolveModelRoute('general');
+    const selected = await resolveModelRoute('general', undefined, 'qwen/qwen3.8-27b:free');
+    assert.equal(selected.selectedModel, 'qwen/qwen3.8-27b:free');
+    assert.ok(selected.fallbackModels.length > 2);
+    assert.ok(!selected.fallbackModels.includes(selected.selectedModel));
+    const retired = await resolveModelRoute('general', undefined, 'retired/model:free');
+    assert.notEqual(retired.selectedModel, 'retired/model:free');
     assert.equal(coding.selectedModel, 'cohere/north-mini-code:free');
     assert.equal(reasoning.selectedModel, 'nvidia/nemotron-3-ultra-550b-a55b:free');
     assert.equal(finance.selectedModel, 'inclusionai/ling-3.0-flash-fin:free');

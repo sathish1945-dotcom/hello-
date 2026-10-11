@@ -910,7 +910,7 @@ export default function App() {
                 });
               }
               setBannerAlert({
-                message: `The connection changed. hello is continuing your reply.`,
+                message: `Trying another available AI…`,
                 type: 'info',
               });
               setTimeout(() => setBannerAlert(null), 3000);
@@ -947,14 +947,8 @@ export default function App() {
               });
             } else if (event.type === 'chunk') {
               if (typeof event.text === 'string' && event.text.length > 0) {
-                // Safeguard against providers sending accumulated snapshots rather than deltas
-                if (accumulatedText && event.text.startsWith(accumulatedText)) {
-                  accumulatedText = event.text;
-                } else if (accumulatedText && event.text === accumulatedText) {
-                  // Duplicate snapshot: ignore
-                } else {
-                  accumulatedText += event.text;
-                }
+                // The server normalizes provider output into incremental text.
+                accumulatedText += event.text;
 
                 const currentText = accumulatedText;
                 // Pure immutable update - immune to React StrictMode double invocation!
