@@ -1,3 +1,4 @@
+import { hasNewOAuthConnection } from './lib/oauth-status.ts';
 import React, { useState, useEffect, useRef } from 'react';
 import { Navbar } from './components/Navbar.tsx';
 import { Sidebar } from './components/Sidebar.tsx';
@@ -43,6 +44,8 @@ export default function App() {
   const [providerStatus, setProviderStatus] = useState<ProviderConnection | null>(null);
   const [isConnectingOpenRouter, setIsConnectingOpenRouter] = useState(false);
   const openRouterPollingRef = useRef<any>(null);
+  const authReadyRef = useRef<Promise<void>>(Promise.resolve());
+  const inFlightOAuthStatesRef = useRef(new Set<string>());
 
   // Chat & History state
   const [chats, setChats] = useState<Chat[]>([]);
@@ -92,10 +95,17 @@ export default function App() {
 
     const initializeAppAndRouting = async () => {
       // 1. Restore authenticated user first to avoid unauthenticated /api/openrouter/status races
-      await fetchCurrentUser();
+      authReadyRef.current = fetchCurrentUser();
+      await authReadyRef.current;
 
       // 2. Check pending native deep links on mount (for cold launch / activity recreation)
       await checkPendingNativeDeepLink();
+      const pending = getStoredOAuthAttempt();
+      if (pending && Date.now() < pending.expiresAt) {
+        restoreScreen(pending.returnScreen);
+        setIsConnectingOpenRouter(true);
+        startPollingOpenRouter(pending.state, pending.returnScreen, pending.pendingAction);
+      }
     };
 
     initializeAppAndRouting();
@@ -249,6 +259,7 @@ export default function App() {
     friendModeActiveBeforeNav?: boolean;
     createdAt: number;
     expiresAt: number;
+    previousUpdatedAt?: string | null;
   }
 
   const getStoredOAuthAttempt = (): StoredOAuthAttempt | null => {
@@ -259,6 +270,7 @@ export default function App() {
       const parsed = JSON.parse(raw);
       if (!parsed || typeof parsed !== 'object') return null;
       return {
+        previousUpdatedAt: parsed.previousUpdatedAt,
         state: String(parsed.state || ''),
         returnScreen: validateReturnScreen(parsed.returnScreen),
         pendingAction: parsed.pendingAction,
@@ -339,25 +351,12 @@ export default function App() {
     state?: string;
     pendingAction?: PendingAction;
   }) => {
-    stopPollingOpenRouter();
-    setIsConnectingOpenRouter(false);
-
+    await authReadyRef.current;
     const storedAttempt = getStoredOAuthAttempt();
 
-    // Reject mismatched state if incoming state is provided and does not match stored attempt
-    if (params.state && storedAttempt && storedAttempt.state && storedAttempt.state !== params.state) {
-      console.warn('[OAuth Return] State mismatch detected:', {
-        incoming: params.state,
-        expected: storedAttempt.state,
-      });
-      setBannerAlert({
-        message: 'Security validation failed: OAuth state mismatch.',
-        type: 'error',
-      });
-      restoreScreen(validateReturnScreen(storedAttempt.returnScreen));
-      clearStoredOAuthAttempt();
-      return;
-    }
+    // Stale callbacks must not destroy a newer attempt or its destination.
+    if (params.state && storedAttempt && storedAttempt.state !== params.state) return;
+    if (!storedAttempt) return;
 
     // Reject expired attempts (>10 minutes)
     if (storedAttempt && Date.now() > storedAttempt.expiresAt) {
@@ -367,25 +366,31 @@ export default function App() {
         type: 'error',
       });
       restoreScreen(validateReturnScreen(storedAttempt.returnScreen));
+      stopPollingOpenRouter();
+      setIsConnectingOpenRouter(false);
       clearStoredOAuthAttempt();
       return;
     }
 
     // Exactly-once execution guard per attempt/state
     const stateKey = params.state || storedAttempt?.state || `time_${Math.floor(Date.now() / 4000)}`;
-    if (processedOAuthStatesRef.current.has(stateKey)) {
+    if (processedOAuthStatesRef.current.has(stateKey) || inFlightOAuthStatesRef.current.has(stateKey)) {
       console.log('[OAuth Return] State already processed, skipping duplicate:', stateKey);
       return;
     }
-    processedOAuthStatesRef.current.add(stateKey);
+    inFlightOAuthStatesRef.current.add(stateKey);
 
-    const rawTarget = params.returnScreen || storedAttempt?.returnScreen;
+    const rawTarget = storedAttempt.returnScreen;
     const targetScreen = validateReturnScreen(rawTarget);
 
     if (params.status === 'error') {
       const errMsg = params.error || 'Authorization was cancelled or rejected by the provider.';
       setBannerAlert({ message: errMsg, type: 'error' });
       restoreScreen(targetScreen);
+      processedOAuthStatesRef.current.add(stateKey);
+      inFlightOAuthStatesRef.current.delete(stateKey);
+      stopPollingOpenRouter();
+      setIsConnectingOpenRouter(false);
       clearStoredOAuthAttempt();
       return;
     }
@@ -399,10 +404,13 @@ export default function App() {
           type: 'error',
         });
         restoreScreen(targetScreen);
-        clearStoredOAuthAttempt();
+        startPollingOpenRouter(storedAttempt.state, targetScreen, storedAttempt.pendingAction);
         return;
       }
 
+      processedOAuthStatesRef.current.add(stateKey);
+      stopPollingOpenRouter();
+      setIsConnectingOpenRouter(false);
       setProviderStatus({
         id: 'openrouter-status',
         user_id: user?.id || '',
@@ -423,7 +431,7 @@ export default function App() {
 
       // Restore pending action exactly once
       const pendingAction: PendingAction | undefined =
-        params.pendingAction || storedAttempt?.pendingAction;
+        storedAttempt.pendingAction;
 
       if (pendingAction) {
         if (pendingAction.type === 'send_prompt' && pendingAction.prompt) {
@@ -438,6 +446,8 @@ export default function App() {
           }
         }
       }
+
+      clearStoredOAuthAttempt();
 
       // Safeguard Friend Mode microphone resumption:
       // Resume microphone capture only if Friend Mode remains enabled, permissions allow it and it was active before navigation.
@@ -456,15 +466,17 @@ export default function App() {
         console.log('[OAuth Return] Friend Mode disabled or was not active before, respecting state');
       }
 
-      clearStoredOAuthAttempt();
     } catch (err: any) {
+      if (processedOAuthStatesRef.current.has(stateKey)) return;
       console.warn('[OAuth Return] Verification error:', err);
       setBannerAlert({
         message: 'Failed to verify OpenRouter status. Please check your connection.',
         type: 'error',
       });
       restoreScreen(targetScreen);
-      clearStoredOAuthAttempt();
+      startPollingOpenRouter(storedAttempt.state, targetScreen, storedAttempt.pendingAction);
+    } finally {
+      inFlightOAuthStatesRef.current.delete(stateKey);
     }
   };
 
@@ -546,7 +558,7 @@ export default function App() {
 
       try {
         const data = await apiRequest<{ connected: boolean; updatedAt?: string }>('/api/openrouter/status');
-        if (data && data.connected) {
+        if (hasNewOAuthConnection(data, getStoredOAuthAttempt())) {
           const attempt = getStoredOAuthAttempt();
           await handleOAuthReturn({
             provider: 'openrouter',
@@ -569,7 +581,7 @@ export default function App() {
       if (isConnectingOpenRouter) {
         try {
           const data = await apiRequest<{ connected: boolean; updatedAt?: string }>('/api/openrouter/status');
-          if (data && data.connected) {
+          if (hasNewOAuthConnection(data, getStoredOAuthAttempt())) {
             const attempt = getStoredOAuthAttempt();
             await handleOAuthReturn({
               provider: 'openrouter',
@@ -636,6 +648,7 @@ export default function App() {
     try {
       setIsConnectingOpenRouter(true);
       const params = new URLSearchParams();
+      params.set('platform', Capacitor.isNativePlatform() ? 'android' : 'web');
       if (returnScreen) params.set('return_screen', returnScreen);
       if (pendingAction) params.set('pending_action', JSON.stringify(pendingAction));
       const queryString = params.toString() ? `?${params.toString()}` : '';
@@ -643,6 +656,7 @@ export default function App() {
       let data: {
         url?: string;
         state?: string;
+        previousUpdatedAt?: string | null;
         returnScreen?: ReturnScreen;
       };
 
@@ -650,6 +664,7 @@ export default function App() {
         data = await apiRequest<{
           url?: string;
           state?: string;
+          previousUpdatedAt?: string | null;
           returnScreen?: ReturnScreen;
         }>(`/api/openrouter/connect${queryString}`, {
           method: 'GET',
@@ -659,12 +674,14 @@ export default function App() {
           data = await apiRequest<{
             url?: string;
             state?: string;
+          previousUpdatedAt?: string | null;
             returnScreen?: ReturnScreen;
           }>('/api/openrouter/connect', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               returnScreen,
+              platform: Capacitor.isNativePlatform() ? 'android' : 'web',
               pendingAction,
             }),
           });
@@ -684,6 +701,7 @@ export default function App() {
           returnScreen: canonicalTarget,
           pendingAction,
           friendModeActiveBeforeNav,
+          previousUpdatedAt: data.previousUpdatedAt,
           createdAt: Date.now(),
           expiresAt: Date.now() + 10 * 60 * 1000,
         });
@@ -696,6 +714,7 @@ export default function App() {
         return;
       }
 
+      startPollingOpenRouter(data.state, returnScreen, pendingAction);
       const isMobile = typeof window !== 'undefined' && (window.innerWidth < 640 || /iPhone|iPad|iPod|Android/i.test(navigator.userAgent));
       if (isMobile) {
         window.location.href = data.url;
